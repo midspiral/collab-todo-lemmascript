@@ -323,226 +323,234 @@ export function init(): Model {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Per-action apply functions
+// ═══════════════════════════════════════════════════════════════
+
+function applyNoOp(m: Model): Result<Model, Err> { return ok(m) }
+
+function applyAddList(m: Model, name: string): Result<Model, Err> {
+  if (listNameExists(m, name)) return err('DuplicateList')
+  const id = m.nextListId
+  return ok({
+    ...m,
+    lists: [...m.lists, id],
+    listNames: { ...m.listNames, [id]: name },
+    tasks: { ...m.tasks, [id]: [] as TaskId[] },
+    nextListId: m.nextListId + 1,
+  })
+}
+
+function applyRenameList(m: Model, listId: ListId, newName: string): Result<Model, Err> {
+  if (!m.lists.includes(listId)) return err('MissingList')
+  if (listNameExists(m, newName, listId)) return err('DuplicateList')
+  return ok({ ...m, listNames: { ...m.listNames, [listId]: newName } })
+}
+
+function applyDeleteList(m: Model, listId: ListId): Result<Model, Err> {
+  if (!m.lists.includes(listId)) return ok(m)
+  const lane = m.tasks[listId] || []
+  const newTaskData = removeKeysFromRecord(m.taskData, lane, 0)
+  const newLists = m.lists.filter(l => l !== listId)
+  const { [listId]: _ln, ...newListNames } = m.listNames
+  const { [listId]: _tk, ...newTasks } = m.tasks
+  return ok({ ...m, lists: newLists, listNames: newListNames, tasks: newTasks, taskData: newTaskData })
+}
+
+function applyMoveList(m: Model, listId: ListId, listPlace: ListPlace): Result<Model, Err> {
+  if (!m.lists.includes(listId)) return err('MissingList')
+  const pos = posFromListPlace(m.lists, listPlace)
+  if (pos < 0) return err('BadAnchor')
+  const without = m.lists.filter(l => l !== listId)
+  const clamped = Math.min(pos, without.length)
+  return ok({ ...m, lists: insertAt(without, clamped, listId) })
+}
+
+function applyAddTask(m: Model, listId: ListId, title: string): Result<Model, Err> {
+  if (!m.lists.includes(listId)) return err('MissingList')
+  if (taskTitleExistsInList(m, listId, title)) return err('DuplicateTask')
+  const id = m.nextTaskId
+  const task: Task = { title, notes: '', completed: false, starred: false, assignees: [], tags: [], deleted: false }
+  const lane = m.tasks[listId] || []
+  return ok({ ...m, tasks: { ...m.tasks, [listId]: [...lane, id] }, taskData: { ...m.taskData, [id]: task }, nextTaskId: m.nextTaskId + 1 })
+}
+
+function applyEditTask(m: Model, taskId: TaskId, title: string, notes: string): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return err('MissingTask')
+  if (task.deleted) return err('TaskDeleted')
+  const listId = findListForTask(m, taskId)
+  if (listId !== undefined && taskTitleExistsInList(m, listId, title, taskId)) return err('DuplicateTask')
+  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, title, notes } } })
+}
+
+function applyDeleteTask(m: Model, taskId: TaskId, userId: UserId): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return ok(m)
+  if (task.deleted) return ok(m)
+  const listId = findListForTask(m, taskId)
+  const newTasks = removeTaskFromAllLists(m.lists, m.tasks, taskId)
+  return ok({ ...m, tasks: newTasks, taskData: { ...m.taskData, [taskId]: { ...task, deleted: true, deletedBy: userId, deletedFromList: listId } } })
+}
+
+function applyRestoreTask(m: Model, taskId: TaskId): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return err('MissingTask')
+  if (!task.deleted) return err('MissingTask')
+  if (m.lists.length === 0) return err('MissingList')
+  const targetList = task.deletedFromList !== undefined && m.lists.includes(task.deletedFromList)
+    ? task.deletedFromList : m.lists[0]
+  if (taskTitleExistsInList(m, targetList, task.title)) return err('DuplicateTask')
+  const lane = m.tasks[targetList] || []
+  return ok({ ...m, tasks: { ...m.tasks, [targetList]: [...lane, taskId] }, taskData: { ...m.taskData, [taskId]: { ...task, deleted: false, deletedBy: undefined, deletedFromList: undefined } } })
+}
+
+function applyMoveTask(m: Model, taskId: TaskId, toList: ListId, taskPlace: Place): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return err('MissingTask')
+  if (task.deleted) return err('TaskDeleted')
+  if (!m.lists.includes(toList)) return err('MissingList')
+  if (taskTitleExistsInList(m, toList, task.title, taskId)) return err('DuplicateTask')
+  const cleaned = removeTaskFromAllLists(m.lists, m.tasks, taskId)
+  const targetLane = cleaned[toList] || []
+  const pos = posFromPlace(targetLane, taskPlace)
+  if (pos < 0) return err('BadAnchor')
+  const clamped = Math.min(pos, targetLane.length)
+  const newLane = insertAt(targetLane, clamped, taskId)
+  return ok({ ...m, tasks: { ...cleaned, [toList]: newLane } })
+}
+
+function applyCompleteTask(m: Model, taskId: TaskId): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return err('MissingTask')
+  if (task.deleted) return err('TaskDeleted')
+  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, completed: true } } })
+}
+
+function applyUncompleteTask(m: Model, taskId: TaskId): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return err('MissingTask')
+  if (task.deleted) return err('TaskDeleted')
+  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, completed: false } } })
+}
+
+function applyStarTask(m: Model, taskId: TaskId): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return err('MissingTask')
+  if (task.deleted) return err('TaskDeleted')
+  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, starred: true } } })
+}
+
+function applyUnstarTask(m: Model, taskId: TaskId): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return err('MissingTask')
+  if (task.deleted) return err('TaskDeleted')
+  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, starred: false } } })
+}
+
+function applySetDueDate(m: Model, taskId: TaskId, dueDate?: DateVal): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return err('MissingTask')
+  if (task.deleted) return err('TaskDeleted')
+  if (dueDate !== undefined && !validDate(dueDate)) return err('InvalidDate')
+  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, dueDate } } })
+}
+
+function applyAssignTask(m: Model, taskId: TaskId, userId: UserId): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return err('MissingTask')
+  if (task.deleted) return err('TaskDeleted')
+  if (!m.members.includes(userId)) return err('NotAMember')
+  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, assignees: [...task.assignees, userId] } } })
+}
+
+function applyUnassignTask(m: Model, taskId: TaskId, userId: UserId): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return err('MissingTask')
+  if (task.deleted) return err('TaskDeleted')
+  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, assignees: task.assignees.filter(u => u !== userId) } } })
+}
+
+function applyAddTagToTask(m: Model, taskId: TaskId, tagId: TagId): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return err('MissingTask')
+  if (task.deleted) return err('TaskDeleted')
+  if (!(tagId in m.tags)) return err('MissingTag')
+  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, tags: [...task.tags, tagId] } } })
+}
+
+function applyRemoveTagFromTask(m: Model, taskId: TaskId, tagId: TagId): Result<Model, Err> {
+  const task = m.taskData[taskId]
+  if (task === undefined) return err('MissingTask')
+  if (task.deleted) return err('TaskDeleted')
+  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, tags: task.tags.filter(t => t !== tagId) } } })
+}
+
+function applyCreateTag(m: Model, name: string): Result<Model, Err> {
+  if (tagNameExists(m, name)) return err('DuplicateTag')
+  const id = m.nextTagId
+  return ok({ ...m, tags: { ...m.tags, [id]: { name } }, nextTagId: m.nextTagId + 1 })
+}
+
+function applyRenameTag(m: Model, tagId: TagId, newName: string): Result<Model, Err> {
+  if (!(tagId in m.tags)) return err('MissingTag')
+  if (tagNameExists(m, newName, tagId)) return err('DuplicateTag')
+  return ok({ ...m, tags: { ...m.tags, [tagId]: { name: newName } } })
+}
+
+function applyDeleteTag(m: Model, tagId: TagId): Result<Model, Err> {
+  if (!(tagId in m.tags)) return ok(m)
+  const newTaskData = removeTagFromAllTasks(m.taskData, tagId)
+  const { [tagId]: _tg, ...newTags } = m.tags
+  return ok({ ...m, taskData: newTaskData, tags: newTags })
+}
+
+function applyMakeCollaborative(m: Model): Result<Model, Err> {
+  if (m.mode === 'Collaborative') return ok(m)
+  return ok({ ...m, mode: 'Collaborative' })
+}
+
+function applyAddMember(m: Model, userId: UserId): Result<Model, Err> {
+  if (m.mode === 'Personal') return err('PersonalProject')
+  if (m.members.includes(userId)) return ok(m)
+  return ok({ ...m, members: [...m.members, userId] })
+}
+
+function applyRemoveMember(m: Model, userId: UserId): Result<Model, Err> {
+  if (userId === m.owner) return err('CannotRemoveOwner')
+  if (!m.members.includes(userId)) return ok(m)
+  const newTaskData = clearAssigneeFromAllTasks(m.taskData, userId)
+  return ok({ ...m, members: m.members.filter(u => u !== userId), taskData: newTaskData })
+}
+
 //@ __mapFromArray
 export function apply(m: Model, a: Action): Result<Model, Err> {
   switch (a.kind) {
-
-  case 'NoOp':
-    return ok(m)
-
-  case 'AddList': {
-    if (listNameExists(m, a.name)) return err('DuplicateList')
-    const id = m.nextListId
-    return ok({
-      ...m,
-      lists: [...m.lists, id],
-      listNames: { ...m.listNames, [id]: a.name },
-      tasks: { ...m.tasks, [id]: [] as TaskId[] },
-      nextListId: m.nextListId + 1,
-    })
-  }
-
-  case 'RenameList': {
-    if (!m.lists.includes(a.listId)) return err('MissingList')
-    if (listNameExists(m, a.newName, a.listId)) return err('DuplicateList')
-    return ok({ ...m, listNames: { ...m.listNames, [a.listId]: a.newName } })
-  }
-
-  case 'DeleteList': {
-    if (!m.lists.includes(a.listId)) return ok(m)
-    const lane = m.tasks[a.listId] || []
-    const newTaskData = removeKeysFromRecord(m.taskData, lane, 0)
-    const newLists = m.lists.filter(l => l !== a.listId)
-    const { [a.listId]: _ln, ...newListNames } = m.listNames
-    const { [a.listId]: _tk, ...newTasks } = m.tasks
-    return ok({
-      ...m,
-      lists: newLists,
-      listNames: newListNames,
-      tasks: newTasks,
-      taskData: newTaskData,
-    })
-  }
-
-  case 'MoveList': {
-    if (!m.lists.includes(a.listId)) return err('MissingList')
-    const pos = posFromListPlace(m.lists, a.listPlace)
-    if (pos < 0) return err('BadAnchor')
-    const without = m.lists.filter(l => l !== a.listId)
-    const clamped = Math.min(pos, without.length)
-    return ok({ ...m, lists: insertAt(without, clamped, a.listId) })
-  }
-
-  case 'AddTask': {
-    if (!m.lists.includes(a.listId)) return err('MissingList')
-    if (taskTitleExistsInList(m, a.listId, a.title)) return err('DuplicateTask')
-    const id = m.nextTaskId
-    const task: Task = {
-      title: a.title, notes: '', completed: false, starred: false,
-      assignees: [], tags: [], deleted: false,
-    }
-    const lane = m.tasks[a.listId] || []
-    return ok({
-      ...m,
-      tasks: { ...m.tasks, [a.listId]: [...lane, id] },
-      taskData: { ...m.taskData, [id]: task },
-      nextTaskId: m.nextTaskId + 1,
-    })
-  }
-
-  case 'EditTask': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return err('MissingTask')
-    if (task.deleted) return err('TaskDeleted')
-    const listId = findListForTask(m, a.taskId)
-    if (listId !== undefined && taskTitleExistsInList(m, listId, a.title, a.taskId)) {
-      return err('DuplicateTask')
-    }
-    return ok({ ...m, taskData: { ...m.taskData, [a.taskId]: { ...task, title: a.title, notes: a.notes } } })
-  }
-
-  case 'DeleteTask': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return ok(m)
-    if (task.deleted) return ok(m)
-    const listId = findListForTask(m, a.taskId)
-    const newTasks = removeTaskFromAllLists(m.lists, m.tasks, a.taskId)
-    return ok({ ...m, tasks: newTasks, taskData: { ...m.taskData, [a.taskId]: { ...task, deleted: true, deletedBy: a.userId, deletedFromList: listId } } })
-  }
-
-  case 'RestoreTask': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return err('MissingTask')
-    if (!task.deleted) return err('MissingTask')
-    if (m.lists.length === 0) return err('MissingList')
-    const targetList = task.deletedFromList !== undefined && m.lists.includes(task.deletedFromList)
-      ? task.deletedFromList : m.lists[0]
-    if (taskTitleExistsInList(m, targetList, task.title)) return err('DuplicateTask')
-    const lane = m.tasks[targetList] || []
-    return ok({
-      ...m,
-      tasks: { ...m.tasks, [targetList]: [...lane, a.taskId] },
-      taskData: { ...m.taskData, [a.taskId]: { ...task, deleted: false, deletedBy: undefined, deletedFromList: undefined } },
-    })
-  }
-
-  case 'MoveTask': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return err('MissingTask')
-    if (task.deleted) return err('TaskDeleted')
-    if (!m.lists.includes(a.toList)) return err('MissingList')
-    if (taskTitleExistsInList(m, a.toList, task.title, a.taskId)) return err('DuplicateTask')
-    const cleaned = removeTaskFromAllLists(m.lists, m.tasks, a.taskId)
-    const targetLane = cleaned[a.toList] || []
-    const pos = posFromPlace(targetLane, a.taskPlace)
-    if (pos < 0) return err('BadAnchor')
-    const clamped = Math.min(pos, targetLane.length)
-    const newLane = insertAt(targetLane, clamped, a.taskId)
-    return ok({ ...m, tasks: { ...cleaned, [a.toList]: newLane } })
-  }
-
-  case 'CompleteTask': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return err('MissingTask')
-    if (task.deleted) return err('TaskDeleted')
-    return ok({ ...m, taskData: { ...m.taskData, [a.taskId]: { ...task, completed: true } } })
-  }
-
-  case 'UncompleteTask': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return err('MissingTask')
-    if (task.deleted) return err('TaskDeleted')
-    return ok({ ...m, taskData: { ...m.taskData, [a.taskId]: { ...task, completed: false } } })
-  }
-
-  case 'StarTask': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return err('MissingTask')
-    if (task.deleted) return err('TaskDeleted')
-    return ok({ ...m, taskData: { ...m.taskData, [a.taskId]: { ...task, starred: true } } })
-  }
-
-  case 'UnstarTask': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return err('MissingTask')
-    if (task.deleted) return err('TaskDeleted')
-    return ok({ ...m, taskData: { ...m.taskData, [a.taskId]: { ...task, starred: false } } })
-  }
-
-  case 'SetDueDate': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return err('MissingTask')
-    if (task.deleted) return err('TaskDeleted')
-    if (a.dueDate !== undefined && !validDate(a.dueDate)) return err('InvalidDate')
-    return ok({ ...m, taskData: { ...m.taskData, [a.taskId]: { ...task, dueDate: a.dueDate } } })
-  }
-
-  case 'AssignTask': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return err('MissingTask')
-    if (task.deleted) return err('TaskDeleted')
-    if (!m.members.includes(a.userId)) return err('NotAMember')
-    return ok({ ...m, taskData: { ...m.taskData, [a.taskId]: { ...task, assignees: [...task.assignees, a.userId] } } })
-  }
-
-  case 'UnassignTask': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return err('MissingTask')
-    if (task.deleted) return err('TaskDeleted')
-    return ok({ ...m, taskData: { ...m.taskData, [a.taskId]: { ...task, assignees: task.assignees.filter(u => u !== a.userId) } } })
-  }
-
-  case 'AddTagToTask': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return err('MissingTask')
-    if (task.deleted) return err('TaskDeleted')
-    if (!(a.tagId in m.tags)) return err('MissingTag')
-    return ok({ ...m, taskData: { ...m.taskData, [a.taskId]: { ...task, tags: [...task.tags, a.tagId] } } })
-  }
-
-  case 'RemoveTagFromTask': {
-    const task = m.taskData[a.taskId]
-    if (task === undefined) return err('MissingTask')
-    if (task.deleted) return err('TaskDeleted')
-    return ok({ ...m, taskData: { ...m.taskData, [a.taskId]: { ...task, tags: task.tags.filter(t => t !== a.tagId) } } })
-  }
-
-  case 'CreateTag': {
-    if (tagNameExists(m, a.name)) return err('DuplicateTag')
-    const id = m.nextTagId
-    return ok({ ...m, tags: { ...m.tags, [id]: { name: a.name } }, nextTagId: m.nextTagId + 1 })
-  }
-
-  case 'RenameTag': {
-    if (!(a.tagId in m.tags)) return err('MissingTag')
-    if (tagNameExists(m, a.newName, a.tagId)) return err('DuplicateTag')
-    return ok({ ...m, tags: { ...m.tags, [a.tagId]: { name: a.newName } } })
-  }
-
-  case 'DeleteTag': {
-    if (!(a.tagId in m.tags)) return ok(m)
-    const newTaskData = removeTagFromAllTasks(m.taskData, a.tagId)
-    const { [a.tagId]: _tg, ...newTags } = m.tags
-    return ok({ ...m, taskData: newTaskData, tags: newTags })
-  }
-
-  case 'MakeCollaborative':
-    if (m.mode === 'Collaborative') return ok(m)
-    return ok({ ...m, mode: 'Collaborative' })
-
-  case 'AddMember': {
-    if (m.mode === 'Personal') return err('PersonalProject')
-    if (m.members.includes(a.userId)) return ok(m)
-    return ok({ ...m, members: [...m.members, a.userId] })
-  }
-
-  case 'RemoveMember': {
-    if (a.userId === m.owner) return err('CannotRemoveOwner')
-    if (!m.members.includes(a.userId)) return ok(m)
-    const newTaskData = clearAssigneeFromAllTasks(m.taskData, a.userId)
-    return ok({ ...m, members: m.members.filter(u => u !== a.userId), taskData: newTaskData })
-  }
-
+  case 'NoOp': return applyNoOp(m)
+  case 'AddList': return applyAddList(m, a.name)
+  case 'RenameList': return applyRenameList(m, a.listId, a.newName)
+  case 'DeleteList': return applyDeleteList(m, a.listId)
+  case 'MoveList': return applyMoveList(m, a.listId, a.listPlace)
+  case 'AddTask': return applyAddTask(m, a.listId, a.title)
+  case 'EditTask': return applyEditTask(m, a.taskId, a.title, a.notes)
+  case 'DeleteTask': return applyDeleteTask(m, a.taskId, a.userId)
+  case 'RestoreTask': return applyRestoreTask(m, a.taskId)
+  case 'MoveTask': return applyMoveTask(m, a.taskId, a.toList, a.taskPlace)
+  case 'CompleteTask': return applyCompleteTask(m, a.taskId)
+  case 'UncompleteTask': return applyUncompleteTask(m, a.taskId)
+  case 'StarTask': return applyStarTask(m, a.taskId)
+  case 'UnstarTask': return applyUnstarTask(m, a.taskId)
+  case 'SetDueDate': return applySetDueDate(m, a.taskId, a.dueDate)
+  case 'AssignTask': return applyAssignTask(m, a.taskId, a.userId)
+  case 'UnassignTask': return applyUnassignTask(m, a.taskId, a.userId)
+  case 'AddTagToTask': return applyAddTagToTask(m, a.taskId, a.tagId)
+  case 'RemoveTagFromTask': return applyRemoveTagFromTask(m, a.taskId, a.tagId)
+  case 'CreateTag': return applyCreateTag(m, a.name)
+  case 'RenameTag': return applyRenameTag(m, a.tagId, a.newName)
+  case 'DeleteTag': return applyDeleteTag(m, a.tagId)
+  case 'MakeCollaborative': return applyMakeCollaborative(m)
+  case 'AddMember': return applyAddMember(m, a.userId)
+  case 'RemoveMember': return applyRemoveMember(m, a.userId)
   }
 }
 

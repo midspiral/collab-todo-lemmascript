@@ -629,42 +629,9 @@ lemma TagNameExistsFalseImpliesUnique(m: Model, name: string, excludeTag: Option
 // These bridge Std.Collections.Seq.Filter (in apply) to FilterNeq* (transparent)
 // =============================================================================
 
-// These decomposition lemmas bridge the opaque Std.Collections.Seq.Filter (used in
-// apply's functional spec) to the transparent FilterNeq* functions (used in proofs).
-// We help the solver by asserting what apply returns for each specific action.
-
-// The generated apply function uses Std.Collections.Seq.Filter (opaque) for
-// UnassignTask, RemoveTagFromTask, RemoveMember, DeleteList, MoveList.
-// The generated domain.dfy also provides FilterNeqInt/FilterNeqString (transparent)
-// with equivalence lemmas. These decompose lemmas bridge the gap.
-//
-// The solver cannot evaluate the large apply function to extract the Filter result.
-// Workaround: prove properties we need directly without decomposing.
-// For the 3 actions that filter task fields or members, we prove the subset
-// property inline in each preservation lemma using FilterNeq* + Equiv.
-
-// Helper: apply for UnassignTask produces a model where the assignees are filtered
-lemma {:axiom} UnassignTaskDecompose(m: Model, taskId: int, userId: string, m2: Model)
-  requires taskId in m.taskData
-  requires !m.taskData[taskId].deleted
-  requires apply(m, UnassignTask(taskId, userId)) == true_(m2)
-  ensures m2.taskData[taskId].assignees == FilterNeqString(m.taskData[taskId].assignees, userId)
-  // Axiom justification: apply's UnassignTask branch computes
-  // Std.Collections.Seq.Filter((u) => u != userId, assignees),
-  // and FilterNeqStringEquiv proves Filter == FilterNeqString.
-  // Solver cannot evaluate the 634-line apply match to verify this.
-
-lemma {:axiom} RemoveTagFromTaskDecompose(m: Model, taskId: int, tagId: int, m2: Model)
-  requires taskId in m.taskData
-  requires !m.taskData[taskId].deleted
-  requires apply(m, RemoveTagFromTask(taskId, tagId)) == true_(m2)
-  ensures m2.taskData[taskId].tags == FilterNeqInt(m.taskData[taskId].tags, tagId)
-
-lemma {:axiom} RemoveMemberDecompose(m: Model, userId: string, m2: Model)
-  requires userId != m.owner
-  requires userId in m.members
-  requires apply(m, RemoveMember(userId)) == true_(m2)
-  ensures m2.members == FilterNeqString(m.members, userId)
+// For actions that use Std.Collections.Seq.Filter (opaque) in apply, we rely on
+// Filter's postconditions: elements of the result are in the original sequence
+// and satisfy the predicate. No need to decompose what apply returns.
 
 // =============================================================================
 // Preservation Lemmas
@@ -1242,21 +1209,21 @@ lemma UnassignTaskPreservesInv(m: Model, taskId: int, userId: string, m2: Model)
   assert forall id :: id in m2.taskData && id != taskId ==> m2.taskData[id] == m.taskData[id];
 
   var t := m.taskData[taskId];
-  UnassignTaskDecompose(m, taskId, userId, m2);
-  FilterNeqStringSubset(t.assignees, userId);
+  assert apply(m, UnassignTask(taskId, userId)) == applyUnassignTask(m, taskId, userId);
+  // applyUnassignTask uses Filter. Bridge to FilterNeqString (transparent).
+  FilterNeqStringEquiv(t.assignees, userId);
+  FilterNeqStringSubsetLemma(t.assignees, userId);
+  // Now: Filter(f, t.assignees) == FilterNeqString(t.assignees, userId)
+  // and: u in FilterNeqString(t.assignees, userId) ==> u in t.assignees
 
-  // H: every assignee of every task is still a member
+  // H: every assignee of every task is still a member.
   forall id | id in m2.taskData
     ensures forall u :: u in m2.taskData[id].assignees ==> u in m2.members
   {
-    if id != taskId {
-    } else {
-      forall u | u in m2.taskData[taskId].assignees
-        ensures u in m2.members
-      {
-        assert u in FilterNeqString(t.assignees, userId);
-        assert u in t.assignees;
-      }
+    if id == taskId {
+      // m2.taskData[taskId].assignees == Filter(f, t.assignees) == FilterNeqString(t.assignees, userId)
+      // FilterNeqStringSubsetLemma: every element was in t.assignees
+      assert m2.taskData[taskId].assignees == FilterNeqString(t.assignees, userId);
     }
   }
 }
@@ -1295,23 +1262,13 @@ lemma RemoveTagFromTaskPreservesInv(m: Model, taskId: int, tagId: int, m2: Model
   assert forall id :: id in m2.taskData && id != taskId ==> m2.taskData[id] == m.taskData[id];
 
   var t := m.taskData[taskId];
-  assert !t.deleted; // required by decompose
-  RemoveTagFromTaskDecompose(m, taskId, tagId, m2);
-  FilterNeqIntSubset(t.tags, tagId);
+  assert apply(m, RemoveTagFromTask(taskId, tagId)) == applyRemoveTagFromTask(m, taskId, tagId);
+  FilterMembership((tg: int) => (tg != tagId), t.tags);
 
-  // F: every tag reference in every task still exists
+  // F: every tag ref still exists.
   forall id | id in m2.taskData
     ensures forall tag :: tag in m2.taskData[id].tags ==> tag in m2.tags
   {
-    if id != taskId {
-    } else {
-      forall tag | tag in m2.taskData[taskId].tags
-        ensures tag in m2.tags
-      {
-        assert tag in FilterNeqInt(t.tags, tagId);
-        assert tag in t.tags;
-      }
-    }
   }
 }
 
@@ -1470,19 +1427,10 @@ lemma RemoveMemberPreservesInv(m: Model, userId: string, m2: Model)
   } else if !(userId in m.members) {
     assert m2 == m;
   } else {
+    assert apply(m, RemoveMember(userId)) == applyRemoveMember(m, userId);
+    FilterMembership((u: string) => (u != userId), m.members);
     var newTaskData := clearAssigneeFromAllTasks(m.taskData, userId);
-    RemoveMemberDecompose(m, userId, m2);
-    assert m2.members == FilterNeqString(m.members, userId);
     assert m2.taskData == newTaskData;
-
-    // P: filter preserves NoDupSeq
-    FilterNeqStringPreservesNoDup(m.members, userId);
-    assert NoDupSeq(m2.members);
-
-    // I: owner != userId, so owner in filtered members
-    assert m.owner != userId;
-    FilterNeqStringKeeps(m.members, userId, m.owner);
-    assert m.owner in m2.members;
 
     ClearAssigneeFromAllTasksRemovesUser(m.taskData, userId);
     ClearAssigneePreservesOtherFields(m.taskData, userId);
@@ -1493,30 +1441,38 @@ lemma RemoveMemberPreservesInv(m: Model, userId: string, m2: Model)
     assert m2.tasks == m.tasks;
     assert forall tid :: tid in m2.taskData ==> CountInLists(m2, tid) == CountInLists(m, tid);
 
-    // J: mode unchanged. If Personal, members was [owner], and owner != userId,
-    // so filtering userId from [owner] gives [owner].
+    // J: if Personal, userId !in m.members (contradiction with branch condition)
     if m.mode.Personal? {
       assert m.members == [m.owner];
       assert userId != m.owner;
-      // userId !in [m.owner]
       assert userId !in m.members;
-      assert false; // unreachable: we checked userId in m.members above
+      assert false;
     }
 
-    // H: remaining assignees were members and != userId, so in filtered members
+    // Via equiv: m2 == applyRemoveMember(m, userId).value
+    // applyRemoveMember uses FilterNeqString (transparent) for members
+    // So m2.members == FilterNeqString(m.members, userId)
+    FilterNeqStringPreservesNoDup(m.members, userId);
+    FilterNeqStringKeeps(m.members, userId, m.owner);
+
+    // I: owner in m2.members (kept because owner != userId)
+    // P: NoDupSeq(m2.members) (filter preserves no-dups)
+    // H: assignees cleared of userId; remaining were members; members only lost userId
     forall id | id in m2.taskData
       ensures forall u :: u in m2.taskData[id].assignees ==> u in m2.members
     {
-      assert id in m.taskData;
-      var updAssignees := m2.taskData[id].assignees;
-      assert updAssignees == FilterNeqString(m.taskData[id].assignees, userId);
-      FilterNeqStringSubset(m.taskData[id].assignees, userId);
-      forall u | u in updAssignees
+      ClearAssigneeSubset(m.taskData, userId);
+      forall u | u in m2.taskData[id].assignees
         ensures u in m2.members
       {
+        // u was in original assignees and u != userId (by clearAssignee)
         assert u in m.taskData[id].assignees;
         assert u != userId;
+        // u in m.members (by Inv H) and u != userId → u in filtered members
         assert u in m.members;
+        // By subset: u in m2.members iff u in m.members && u != userId
+        // But we need the reverse: u in m.members && u != userId ==> u in m2.members
+        // This comes from FilterNeqString keeping elements != userId
         FilterNeqStringKeeps(m.members, userId, u);
       }
     }
