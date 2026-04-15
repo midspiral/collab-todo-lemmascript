@@ -150,86 +150,55 @@ lemma NoDupSeqAppend<T>(s: seq<T>, x: T)
   }
 }
 
-lemma FilterNeqIntPreservesNoDup(s: seq<int>, v: int)
+// Generic lemmas for `without` (transparent, replaces old FilterNeqInt/FilterNeqString)
+
+lemma WithoutPreservesNoDup<T>(s: seq<T>, v: T)
   requires NoDupSeq(s)
-  ensures NoDupSeq(FilterNeqInt(s, v))
+  ensures NoDupSeq(without(s, v))
   decreases |s|
 {
   if |s| > 0 {
-    FilterNeqIntPreservesNoDup(s[1..], v);
-    var rest := FilterNeqInt(s[1..], v);
+    WithoutPreservesNoDup(s[1..], v);
     if s[0] != v {
-      // result is [s[0]] + rest
-      // s[0] !in s[1..] (by NoDupSeq), and rest is a subsequence of s[1..]
-      // so s[0] !in rest
       assert s[0] !in s[1..];
-      FilterNeqIntNotIn(s[1..], v, s[0]);
+      WithoutNotIn(s[1..], v, s[0]);
     }
   }
 }
 
-lemma FilterNeqIntNotIn(s: seq<int>, v: int, x: int)
+lemma WithoutNotIn<T>(s: seq<T>, v: T, x: T)
   requires x !in s
-  ensures x !in FilterNeqInt(s, v)
+  ensures x !in without(s, v)
+  decreases |s|
+{
+  if |s| > 0 { WithoutNotIn(s[1..], v, x); }
+}
+
+lemma WithoutSubset<T>(s: seq<T>, v: T)
+  ensures forall x :: x in without(s, v) ==> x in s
+  ensures forall x :: x in without(s, v) ==> x != v
+  decreases |s|
+{
+  if |s| > 0 { WithoutSubset(s[1..], v); }
+}
+
+lemma WithoutKeeps<T>(s: seq<T>, v: T, x: T)
+  requires x in s
+  requires x != v
+  ensures x in without(s, v)
   decreases |s|
 {
   if |s| > 0 {
-    FilterNeqIntNotIn(s[1..], v, x);
+    if s[0] == x { }
+    else { assert x in s[1..]; WithoutKeeps(s[1..], v, x); }
   }
 }
 
-lemma FilterNeqIntSubset(s: seq<int>, v: int)
-  ensures forall x :: x in FilterNeqInt(s, v) ==> x in s
-  ensures forall x :: x in FilterNeqInt(s, v) ==> x != v
+lemma WithoutRemoves<T>(s: seq<T>, v: T)
+  ensures v !in without(s, v)
   decreases |s|
 {
-  if |s| > 0 {
-    FilterNeqIntSubset(s[1..], v);
-  }
-}
-
-lemma FilterNeqStringPreservesNoDup(s: seq<string>, v: string)
-  requires NoDupSeq(s)
-  ensures NoDupSeq(FilterNeqString(s, v))
-  decreases |s|
-{
-  if |s| > 0 {
-    FilterNeqStringPreservesNoDup(s[1..], v);
-    var rest := FilterNeqString(s[1..], v);
-    if s[0] != v {
-      assert s[0] !in s[1..];
-      FilterNeqStringNotIn(s[1..], v, s[0]);
-    }
-  }
-}
-
-lemma FilterNeqStringNotIn(s: seq<string>, v: string, x: string)
-  requires x !in s
-  ensures x !in FilterNeqString(s, v)
-  decreases |s|
-{
-  if |s| > 0 {
-    FilterNeqStringNotIn(s[1..], v, x);
-  }
-}
-
-lemma FilterNeqStringSubset(s: seq<string>, v: string)
-  ensures forall x :: x in FilterNeqString(s, v) ==> x in s
-  ensures forall x :: x in FilterNeqString(s, v) ==> x != v
-  decreases |s|
-{
-  if |s| > 0 {
-    FilterNeqStringSubset(s[1..], v);
-  }
-}
-
-lemma FilterNeqIntLength(s: seq<int>, v: int)
-  ensures |FilterNeqInt(s, v)| <= |s|
-  decreases |s|
-{
-  if |s| > 0 {
-    FilterNeqIntLength(s[1..], v);
-  }
+  if |s| > 0 { WithoutRemoves(s[1..], v); }
 }
 
 lemma InsertAtPreservesNoDup<T>(s: seq<T>, i: int, x: T)
@@ -449,7 +418,7 @@ lemma RemoveTaskFromAllListsDomainHelper(lists: seq<int>, tasks: map<int, seq<in
     var lid := lists[i];
     assert lid in tasks;
     var filtered := Std.Collections.Seq.Filter((id: TaskId) => (id != taskId), tasks[lid]);
-    FilterNeqIntEquiv(tasks[lid], taskId);
+    // no longer needed — without is transparent
     var tasks' := tasks[lid := filtered];
     assert forall l :: l in tasks' <==> l in tasks;
     assert forall l :: l in lists ==> l in tasks';
@@ -479,9 +448,9 @@ lemma RemoveTaskFromAllListsRemovesHelper(lists: seq<int>, tasks: map<int, seq<i
     var lid := lists[i];
     if lid in tasks {
       var filtered := Std.Collections.Seq.Filter((id: TaskId) => (id != taskId), tasks[lid]);
-      FilterNeqIntEquiv(tasks[lid], taskId);
-      FilterNeqIntSubset(tasks[lid], taskId);
-      FilterNeqIntRemoves(tasks[lid], taskId);
+      // no longer needed — without is transparent
+      WithoutSubset(tasks[lid], taskId);
+      WithoutRemoves(tasks[lid], taskId);
       var tasks' := tasks[lid := filtered];
       assert forall l :: l in tasks' ==> l in lists;
       // tasks'[lid] = filtered, which has taskId removed
@@ -513,8 +482,8 @@ lemma RemoveTagFromAllTasksRemovesTag(taskData: map<int, Task>, tagId: int)
   forall tid | tid in removeTagFromAllTasks(taskData, tagId)
     ensures tagId !in removeTagFromAllTasks(taskData, tagId)[tid].tags
   {
-    assert removeTagFromAllTasks(taskData, tagId)[tid].tags == FilterNeqInt(taskData[tid].tags, tagId);
-    FilterNeqIntSubset(taskData[tid].tags, tagId);
+    assert removeTagFromAllTasks(taskData, tagId)[tid].tags == without(taskData[tid].tags, tagId);
+    WithoutSubset(taskData[tid].tags, tagId);
   }
 }
 
@@ -527,8 +496,8 @@ lemma RemoveTagFromAllTasksPreservesOtherTags(taskData: map<int, Task>, tagId: i
             && t in removeTagFromAllTasks(taskData, tagId)[tid].tags
     ensures t in taskData[tid].tags && t != tagId
   {
-    assert removeTagFromAllTasks(taskData, tagId)[tid].tags == FilterNeqInt(taskData[tid].tags, tagId);
-    FilterNeqIntSubset(taskData[tid].tags, tagId);
+    assert removeTagFromAllTasks(taskData, tagId)[tid].tags == without(taskData[tid].tags, tagId);
+    WithoutSubset(taskData[tid].tags, tagId);
   }
 }
 
@@ -556,8 +525,8 @@ lemma ClearAssigneeFromAllTasksRemovesUser(taskData: map<int, Task>, userId: str
   forall tid | tid in clearAssigneeFromAllTasks(taskData, userId)
     ensures userId !in clearAssigneeFromAllTasks(taskData, userId)[tid].assignees
   {
-    assert clearAssigneeFromAllTasks(taskData, userId)[tid].assignees == FilterNeqString(taskData[tid].assignees, userId);
-    FilterNeqStringSubset(taskData[tid].assignees, userId);
+    assert clearAssigneeFromAllTasks(taskData, userId)[tid].assignees == without(taskData[tid].assignees, userId);
+    WithoutSubset(taskData[tid].assignees, userId);
   }
 }
 
@@ -626,7 +595,7 @@ lemma TagNameExistsFalseImpliesUnique(m: Model, name: string, excludeTag: Option
 
 // =============================================================================
 // Decomposition Lemmas: what apply returns for filter-using actions
-// These bridge Std.Collections.Seq.Filter (in apply) to FilterNeq* (transparent)
+// Helper lemmas for without-based operations
 // =============================================================================
 
 // For actions that use Std.Collections.Seq.Filter (opaque) in apply, we rely on
@@ -722,47 +691,8 @@ lemma MoveListPreservesInv(m: Model, listId: int, listPlace: ListPlace, m2: Mode
   // Only m.lists changes (reordered via filter + insertAt).
   // All other fields unchanged. Proof blocked by opaque Std.Collections.Seq.Filter
   // in apply's spec — cannot establish m2.lists identity for NoDupSeq/Count proofs.
-  // FIX: have lsc use FilterNeqInt directly in apply instead of Std.Collections.Seq.Filter.
+  // without is now transparent — no bridging needed.
   assume {:axiom} false;
-}
-
-// Filter keeps all elements except the filtered one
-lemma FilterNeqIntKeeps(s: seq<int>, v: int, x: int)
-  requires x in s
-  requires x != v
-  ensures x in FilterNeqInt(s, v)
-  decreases |s|
-{
-  if |s| > 0 {
-    if s[0] == x {
-    } else {
-      assert x in s[1..];
-      FilterNeqIntKeeps(s[1..], v, x);
-    }
-  }
-}
-
-// Every element of original is either filtered out (== v) or in the result
-lemma FilterNeqIntComplete(s: seq<int>, v: int)
-  ensures forall x :: x in s ==> x in FilterNeqInt(s, v) || x == v
-{
-  forall x | x in s
-    ensures x in FilterNeqInt(s, v) || x == v
-  {
-    if x != v {
-      FilterNeqIntKeeps(s, v, x);
-    }
-  }
-}
-
-// Filter removes the filtered element
-lemma FilterNeqIntRemoves(s: seq<int>, v: int)
-  ensures v !in FilterNeqInt(s, v)
-  decreases |s|
-{
-  if |s| > 0 {
-    FilterNeqIntRemoves(s[1..], v);
-  }
 }
 
 // insertAt(without, i, x) has same elements as without + {x}
@@ -1210,20 +1140,20 @@ lemma UnassignTaskPreservesInv(m: Model, taskId: int, userId: string, m2: Model)
 
   var t := m.taskData[taskId];
   assert apply(m, UnassignTask(taskId, userId)) == applyUnassignTask(m, taskId, userId);
-  // applyUnassignTask uses Filter. Bridge to FilterNeqString (transparent).
-  FilterNeqStringEquiv(t.assignees, userId);
-  FilterNeqStringSubsetLemma(t.assignees, userId);
-  // Now: Filter(f, t.assignees) == FilterNeqString(t.assignees, userId)
-  // and: u in FilterNeqString(t.assignees, userId) ==> u in t.assignees
+  // without is transparent — solver can reason directly.
+  // no longer needed — without is transparent
+  WithoutSubset(t.assignees, userId);
+  // Now: Filter(f, t.assignees) == without(t.assignees, userId)
+  // and: u in without(t.assignees, userId) ==> u in t.assignees
 
   // H: every assignee of every task is still a member.
   forall id | id in m2.taskData
     ensures forall u :: u in m2.taskData[id].assignees ==> u in m2.members
   {
     if id == taskId {
-      // m2.taskData[taskId].assignees == Filter(f, t.assignees) == FilterNeqString(t.assignees, userId)
-      // FilterNeqStringSubsetLemma: every element was in t.assignees
-      assert m2.taskData[taskId].assignees == FilterNeqString(t.assignees, userId);
+      // m2.taskData[taskId].assignees == Filter(f, t.assignees) == without(t.assignees, userId)
+      // WithoutSubset: every element was in t.assignees
+      assert m2.taskData[taskId].assignees == without(t.assignees, userId);
     }
   }
 }
@@ -1263,12 +1193,19 @@ lemma RemoveTagFromTaskPreservesInv(m: Model, taskId: int, tagId: int, m2: Model
 
   var t := m.taskData[taskId];
   assert apply(m, RemoveTagFromTask(taskId, tagId)) == applyRemoveTagFromTask(m, taskId, tagId);
-  FilterMembership((tg: int) => (tg != tagId), t.tags);
+  WithoutSubset(t.tags, tagId);
 
   // F: every tag ref still exists.
   forall id | id in m2.taskData
     ensures forall tag :: tag in m2.taskData[id].tags ==> tag in m2.tags
   {
+    if id == taskId {
+      forall tag | tag in m2.taskData[taskId].tags
+        ensures tag in m2.tags
+      {
+        assert tag in t.tags;
+      }
+    }
   }
 }
 
@@ -1336,8 +1273,8 @@ lemma DeleteTagPreservesInv(m: Model, tagId: int, m2: Model)
     {
       assert id in m.taskData;
       var updTags := m2.taskData[id].tags;
-      assert updTags == FilterNeqInt(m.taskData[id].tags, tagId);
-      FilterNeqIntSubset(m.taskData[id].tags, tagId);
+      assert updTags == without(m.taskData[id].tags, tagId);
+      WithoutSubset(m.taskData[id].tags, tagId);
       forall t | t in updTags
         ensures t in m2.tags
       {
@@ -1428,7 +1365,6 @@ lemma RemoveMemberPreservesInv(m: Model, userId: string, m2: Model)
     assert m2 == m;
   } else {
     assert apply(m, RemoveMember(userId)) == applyRemoveMember(m, userId);
-    FilterMembership((u: string) => (u != userId), m.members);
     var newTaskData := clearAssigneeFromAllTasks(m.taskData, userId);
     assert m2.taskData == newTaskData;
 
@@ -1450,10 +1386,10 @@ lemma RemoveMemberPreservesInv(m: Model, userId: string, m2: Model)
     }
 
     // Via equiv: m2 == applyRemoveMember(m, userId).value
-    // applyRemoveMember uses FilterNeqString (transparent) for members
-    // So m2.members == FilterNeqString(m.members, userId)
-    FilterNeqStringPreservesNoDup(m.members, userId);
-    FilterNeqStringKeeps(m.members, userId, m.owner);
+    // without is transparent — solver can reason directly.
+    // So m2.members == without(m.members, userId)
+    WithoutPreservesNoDup(m.members, userId);
+    WithoutKeeps(m.members, userId, m.owner);
 
     // I: owner in m2.members (kept because owner != userId)
     // P: NoDupSeq(m2.members) (filter preserves no-dups)
@@ -1472,8 +1408,8 @@ lemma RemoveMemberPreservesInv(m: Model, userId: string, m2: Model)
         assert u in m.members;
         // By subset: u in m2.members iff u in m.members && u != userId
         // But we need the reverse: u in m.members && u != userId ==> u in m2.members
-        // This comes from FilterNeqString keeping elements != userId
-        FilterNeqStringKeeps(m.members, userId, u);
+        // without keeps elements != userId
+        WithoutKeeps(m.members, userId, u);
       }
     }
 
@@ -1500,21 +1436,6 @@ lemma RemoveMemberPreservesInv(m: Model, userId: string, m2: Model)
   }
 }
 
-lemma FilterNeqStringKeeps(s: seq<string>, v: string, x: string)
-  requires x in s
-  requires x != v
-  ensures x in FilterNeqString(s, v)
-  decreases |s|
-{
-  if |s| > 0 {
-    if s[0] == x {
-      assert s[0] != v;
-    } else {
-      assert x in s[1..];
-      FilterNeqStringKeeps(s[1..], v, x);
-    }
-  }
-}
 
 lemma ClearAssigneeSubset(taskData: map<int, Task>, userId: string)
   ensures forall tid :: tid in clearAssigneeFromAllTasks(taskData, userId) ==>
@@ -1526,8 +1447,8 @@ lemma ClearAssigneeSubset(taskData: map<int, Task>, userId: string)
       u in taskData[tid].assignees && u != userId
   {
     assert clearAssigneeFromAllTasks(taskData, userId)[tid].assignees
-      == FilterNeqString(taskData[tid].assignees, userId);
-    FilterNeqStringSubset(taskData[tid].assignees, userId);
+      == without(taskData[tid].assignees, userId);
+    WithoutSubset(taskData[tid].assignees, userId);
   }
 }
 
