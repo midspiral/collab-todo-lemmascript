@@ -147,6 +147,19 @@ function eqIgnoreCase(a: string, b: string): bool
   (StringToLower(a) == StringToLower(b))
 }
 
+function without<T(==)>(s: seq<T>, v: T): seq<T>
+  decreases |s|
+{
+  if (|s| == 0) then
+    []
+  else
+    var rest := without(s[1..], v);
+    if (s[0] != v) then
+      ([s[0]] + rest)
+    else
+      rest
+}
+
 function insertAt<T>(s: seq<T>, i: int, x: T): seq<T>
   requires (i >= 0)
   requires (i <= |s|)
@@ -303,7 +316,7 @@ function removeTaskFromListsFrom(lists: seq<ListId>, tasks: map<int, seq<TaskId>
     var lane := (if lid in tasks then Some(tasks[lid]) else None);
     match lane {
       case Some(i_lane_val) =>
-        removeTaskFromListsFrom(lists, tasks[lid := Std.Collections.Seq.Filter((id: TaskId) => (id != taskId), i_lane_val)], taskId, (i + 1))
+        removeTaskFromListsFrom(lists, tasks[lid := without(i_lane_val, taskId)], taskId, (i + 1))
       case None =>
         removeTaskFromListsFrom(lists, tasks, taskId, (i + 1))
     }
@@ -378,7 +391,7 @@ function applyDeleteList(m: Model, listId: ListId): Result<Model, Err>
   else
     var lane := (match (if listId in m.tasks then Some(m.tasks[listId]) else None) { case Some(i_value) => i_value case None => [] });
     var newTaskData := removeKeysFromRecord(m.taskData, lane, 0);
-    var newLists := Std.Collections.Seq.Filter((l: int) => (l != listId), m.lists);
+    var newLists := without(m.lists, listId);
     var newListNames := (map k | k in m.listNames && k != listId :: m.listNames[k]);
     var newTasks := (map k | k in m.tasks && k != listId :: m.tasks[k]);
     ok(m.(lists := newLists, listNames := newListNames, tasks := newTasks, taskData := newTaskData))
@@ -393,9 +406,9 @@ function applyMoveList(m: Model, listId: ListId, listPlace: ListPlace): Result<M
     if (pos < 0) then
       err(Err.BadAnchor)
     else
-      var without := Std.Collections.Seq.Filter((l: int) => (l != listId), m.lists);
-      var clamped := MathMin(pos, |without|);
-      ok(m.(lists := insertAt(without, clamped, listId)))
+      var listsWithout := without(m.lists, listId);
+      var clamped := MathMin(pos, |listsWithout|);
+      ok(m.(lists := insertAt(listsWithout, clamped, listId)))
 }
 
 function applyAddTask(m: Model, listId: ListId, title: string): Result<Model, Err>
@@ -604,7 +617,7 @@ function applyUnassignTask(m: Model, taskId: TaskId, userId: UserId): Result<Mod
       if i_task_val.deleted then
         err(Err.TaskDeleted)
       else
-        ok(m.(taskData := m.taskData[taskId := i_task_val.(assignees := Std.Collections.Seq.Filter((u: string) => (u != userId), i_task_val.assignees))]))
+        ok(m.(taskData := m.taskData[taskId := i_task_val.(assignees := without(i_task_val.assignees, userId))]))
     case None =>
       err(Err.MissingTask)
   }
@@ -635,7 +648,7 @@ function applyRemoveTagFromTask(m: Model, taskId: TaskId, tagId: TagId): Result<
       if i_task_val.deleted then
         err(Err.TaskDeleted)
       else
-        ok(m.(taskData := m.taskData[taskId := i_task_val.(tags := Std.Collections.Seq.Filter((t: int) => (t != tagId), i_task_val.tags))]))
+        ok(m.(taskData := m.taskData[taskId := i_task_val.(tags := without(i_task_val.tags, tagId))]))
     case None =>
       err(Err.MissingTask)
   }
@@ -699,7 +712,7 @@ function applyRemoveMember(m: Model, userId: UserId): Result<Model, Err>
       ok(m)
     else
       var newTaskData := clearAssigneeFromAllTasks(m.taskData, userId);
-      ok(m.(members := Std.Collections.Seq.Filter((u: string) => (u != userId), m.members), taskData := newTaskData))
+      ok(m.(members := without(m.members, userId), taskData := newTaskData))
 }
 
 function apply(m: Model, a: Action): Result<Model, Err>
@@ -1014,43 +1027,9 @@ by method {
   return false;
 }
 
-function FilterNeqInt(s: seq<int>, v: int): seq<int>
-  decreases |s|
-{
-  if |s| == 0 then []
-  else (if s[0] != v then [s[0]] else []) + FilterNeqInt(s[1..], v)
-}
-
-lemma FilterNeqIntEquiv(s: seq<int>, v: int)
-  ensures Std.Collections.Seq.Filter((t: int) => (t != v), s) == FilterNeqInt(s, v)
-  decreases |s|
-{
-  reveal Std.Collections.Seq.Filter();
-  if |s| > 0 {
-    FilterNeqIntEquiv(s[1..], v);
-  }
-}
-
-function FilterNeqString(s: seq<string>, v: string): seq<string>
-  decreases |s|
-{
-  if |s| == 0 then []
-  else (if s[0] != v then [s[0]] else []) + FilterNeqString(s[1..], v)
-}
-
-lemma FilterNeqStringEquiv(s: seq<string>, v: string)
-  ensures Std.Collections.Seq.Filter((u: string) => (u != v), s) == FilterNeqString(s, v)
-  decreases |s|
-{
-  reveal Std.Collections.Seq.Filter();
-  if |s| > 0 {
-    FilterNeqStringEquiv(s[1..], v);
-  }
-}
-
 function removeTagFromAllTasks(taskData: map<int, Task>, tagId: TagId): map<int, Task>
 {
-  map tid | tid in taskData :: taskData[tid].(tags := FilterNeqInt(taskData[tid].tags, tagId))
+  map tid | tid in taskData :: taskData[tid].(tags := without(taskData[tid].tags, tagId))
 }
 by method {
   var result: map<int, Task> := map[];
@@ -1059,12 +1038,12 @@ by method {
   while i_tid_idx < |i_tid_keys|
     invariant (i_tid_idx <= |i_tid_keys|)
     invariant forall tid :: tid in i_tid_keys[..i_tid_idx] ==> tid in result
-    invariant forall tid :: tid in result ==> tid in taskData && result[tid] == taskData[tid].(tags := FilterNeqInt(taskData[tid].tags, tagId))
+    invariant forall tid :: tid in result ==> tid in taskData && result[tid] == taskData[tid].(tags := without(taskData[tid].tags, tagId))
   {
     var tid := i_tid_keys[i_tid_idx];
     var task := taskData[tid];
-    var newTags := Std.Collections.Seq.Filter((t: int) => (t != tagId), task.tags);
-    FilterNeqIntEquiv(task.tags, tagId);
+    var i_t1 := without(task.tags, tagId);
+    var newTags := i_t1;
     result := result[tid := task.(tags := newTags)];
     i_tid_idx := i_tid_idx + 1;
   }
@@ -1079,7 +1058,7 @@ by method {
 
 function clearAssigneeFromAllTasks(taskData: map<int, Task>, userId: UserId): map<int, Task>
 {
-  map tid | tid in taskData :: taskData[tid].(assignees := FilterNeqString(taskData[tid].assignees, userId))
+  map tid | tid in taskData :: taskData[tid].(assignees := without(taskData[tid].assignees, userId))
 }
 by method {
   var result: map<int, Task> := map[];
@@ -1088,12 +1067,12 @@ by method {
   while i_tid_idx < |i_tid_keys|
     invariant (i_tid_idx <= |i_tid_keys|)
     invariant forall tid :: tid in i_tid_keys[..i_tid_idx] ==> tid in result
-    invariant forall tid :: tid in result ==> tid in taskData && result[tid] == taskData[tid].(assignees := FilterNeqString(taskData[tid].assignees, userId))
+    invariant forall tid :: tid in result ==> tid in taskData && result[tid] == taskData[tid].(assignees := without(taskData[tid].assignees, userId))
   {
     var tid := i_tid_keys[i_tid_idx];
     var task := taskData[tid];
-    var newAssignees := Std.Collections.Seq.Filter((u: string) => (u != userId), task.assignees);
-    FilterNeqStringEquiv(task.assignees, userId);
+    var i_t2 := without(task.assignees, userId);
+    var newAssignees := i_t2;
     result := result[tid := task.(assignees := newAssignees)];
     i_tid_idx := i_tid_idx + 1;
   }
@@ -1122,8 +1101,8 @@ by method {
   {
     var i_ := i___keys[i___idx];
     var task := m.taskData[i_];
-    var i_t1 := isPriorityTask(task);
-    if i_t1 {
+    var i_t3 := isPriorityTask(task);
+    if i_t3 {
       count := (count + 1);
       matched := matched + {i_};
     }
@@ -1150,8 +1129,8 @@ by method {
   {
     var i_ := i___keys[i___idx];
     var task := m.taskData[i_];
-    var i_t2 := isLogbookTask(task);
-    if i_t2 {
+    var i_t4 := isLogbookTask(task);
+    if i_t4 {
       count := (count + 1);
       matched := matched + {i_};
     }
@@ -1161,38 +1140,3 @@ by method {
   assert matched == set tid | tid in m.taskData && isLogbookTask(m.taskData[tid]) :: tid;
   return count;
 }
-
-// =============================================================================
-// Per-action sub-functions for apply cases that use Std.Collections.Seq.Filter.
-// These are small enough for the solver to decompose + apply Filter postconditions.
-// =============================================================================
-
-// Bridge: Filter's postcondition is index-based (result[i] in s), but we need
-// membership-based (u in result ==> u in s). Standard library gap.
-lemma FilterMembership<T(!new)>(f: T ~> bool, s: seq<T>)
-  requires forall i :: 0 <= i < |s| ==> f.requires(s[i])
-  ensures forall u :: u in Std.Collections.Seq.Filter(f, s) ==> u in s && f(u)
-{
-  reveal Std.Collections.Seq.Filter();
-}
-
-// Sub-functions for apply's Filter-using cases.
-// Spec uses FilterNeq* (transparent) so postconditions are provable.
-// by-method uses Std.Collections.Seq.Filter (matching apply's code).
-// Postconditions give the properties proofs need at every call site.
-
-// FilterNeq subset properties (needed for postcondition lemmas below)
-lemma FilterNeqStringSubsetLemma(s: seq<string>, v: string)
-  ensures forall x :: x in FilterNeqString(s, v) ==> x in s && x != v
-  decreases |s|
-{
-  if |s| > 0 { FilterNeqStringSubsetLemma(s[1..], v); }
-}
-
-lemma FilterNeqIntSubsetLemma(s: seq<int>, v: int)
-  ensures forall x :: x in FilterNeqInt(s, v) ==> x in s && x != v
-  decreases |s|
-{
-  if |s| > 0 { FilterNeqIntSubsetLemma(s[1..], v); }
-}
-

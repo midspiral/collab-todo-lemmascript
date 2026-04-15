@@ -147,6 +147,19 @@ function eqIgnoreCase(a: string, b: string): bool
   (StringToLower(a) == StringToLower(b))
 }
 
+function without<T(==)>(s: seq<T>, v: T): seq<T>
+  decreases |s|
+{
+  if (|s| == 0) then
+    []
+  else
+    var rest := without(s[1..], v);
+    if (s[0] != v) then
+      ([s[0]] + rest)
+    else
+      rest
+}
+
 function insertAt<T>(s: seq<T>, i: int, x: T): seq<T>
   requires (i >= 0)
   requires (i <= |s|)
@@ -303,7 +316,7 @@ function removeTaskFromListsFrom(lists: seq<ListId>, tasks: map<int, seq<TaskId>
     var lane := (if lid in tasks then Some(tasks[lid]) else None);
     match lane {
       case Some(i_lane_val) =>
-        removeTaskFromListsFrom(lists, tasks[lid := Std.Collections.Seq.Filter((id: TaskId) => (id != taskId), i_lane_val)], taskId, (i + 1))
+        removeTaskFromListsFrom(lists, tasks[lid := without(i_lane_val, taskId)], taskId, (i + 1))
       case None =>
         removeTaskFromListsFrom(lists, tasks, taskId, (i + 1))
     }
@@ -378,7 +391,7 @@ function applyDeleteList(m: Model, listId: ListId): Result<Model, Err>
   else
     var lane := (match (if listId in m.tasks then Some(m.tasks[listId]) else None) { case Some(i_value) => i_value case None => [] });
     var newTaskData := removeKeysFromRecord(m.taskData, lane, 0);
-    var newLists := Std.Collections.Seq.Filter((l: int) => (l != listId), m.lists);
+    var newLists := without(m.lists, listId);
     var newListNames := (map k | k in m.listNames && k != listId :: m.listNames[k]);
     var newTasks := (map k | k in m.tasks && k != listId :: m.tasks[k]);
     ok(m.(lists := newLists, listNames := newListNames, tasks := newTasks, taskData := newTaskData))
@@ -393,9 +406,9 @@ function applyMoveList(m: Model, listId: ListId, listPlace: ListPlace): Result<M
     if (pos < 0) then
       err(Err.BadAnchor)
     else
-      var without := Std.Collections.Seq.Filter((l: int) => (l != listId), m.lists);
-      var clamped := MathMin(pos, |without|);
-      ok(m.(lists := insertAt(without, clamped, listId)))
+      var listsWithout := without(m.lists, listId);
+      var clamped := MathMin(pos, |listsWithout|);
+      ok(m.(lists := insertAt(listsWithout, clamped, listId)))
 }
 
 function applyAddTask(m: Model, listId: ListId, title: string): Result<Model, Err>
@@ -570,7 +583,7 @@ function applySetDueDate(m: Model, taskId: TaskId, dueDate: Option<DateVal>): Re
             if !(validDate(i_dueDate_val)) then
               err(Err.InvalidDate)
             else
-              ok(m.(taskData := m.taskData[taskId := i_task_val.(dueDate := i_dueDate_val)]))
+              ok(m.(taskData := m.taskData[taskId := i_task_val.(dueDate := Some(i_dueDate_val))]))
           case None =>
             ok(m.(taskData := m.taskData[taskId := i_task_val.(dueDate := dueDate)]))
         }
@@ -604,7 +617,7 @@ function applyUnassignTask(m: Model, taskId: TaskId, userId: UserId): Result<Mod
       if i_task_val.deleted then
         err(Err.TaskDeleted)
       else
-        ok(m.(taskData := m.taskData[taskId := i_task_val.(assignees := Std.Collections.Seq.Filter((u: string) => (u != userId), i_task_val.assignees))]))
+        ok(m.(taskData := m.taskData[taskId := i_task_val.(assignees := without(i_task_val.assignees, userId))]))
     case None =>
       err(Err.MissingTask)
   }
@@ -635,7 +648,7 @@ function applyRemoveTagFromTask(m: Model, taskId: TaskId, tagId: TagId): Result<
       if i_task_val.deleted then
         err(Err.TaskDeleted)
       else
-        ok(m.(taskData := m.taskData[taskId := i_task_val.(tags := Std.Collections.Seq.Filter((t: int) => (t != tagId), i_task_val.tags))]))
+        ok(m.(taskData := m.taskData[taskId := i_task_val.(tags := without(i_task_val.tags, tagId))]))
     case None =>
       err(Err.MissingTask)
   }
@@ -699,7 +712,7 @@ function applyRemoveMember(m: Model, userId: UserId): Result<Model, Err>
       ok(m)
     else
       var newTaskData := clearAssigneeFromAllTasks(m.taskData, userId);
-      ok(m.(members := Std.Collections.Seq.Filter((u: string) => (u != userId), m.members), taskData := newTaskData))
+      ok(m.(members := without(m.members, userId), taskData := newTaskData))
 }
 
 function apply(m: Model, a: Action): Result<Model, Err>
@@ -1020,7 +1033,8 @@ by method {
   {
     var tid := i_tid_keys[i_tid_idx];
     var task := taskData[tid];
-    var newTags := Std.Collections.Seq.Filter((t: int) => (t != tagId), task.tags);
+    var i_t1 := without(task.tags, tagId);
+    var newTags := i_t1;
     result := result[tid := task.(tags := newTags)];
     i_tid_idx := i_tid_idx + 1;
   }
@@ -1039,7 +1053,8 @@ by method {
   {
     var tid := i_tid_keys[i_tid_idx];
     var task := taskData[tid];
-    var newAssignees := Std.Collections.Seq.Filter((u: string) => (u != userId), task.assignees);
+    var i_t2 := without(task.assignees, userId);
+    var newAssignees := i_t2;
     result := result[tid := task.(assignees := newAssignees)];
     i_tid_idx := i_tid_idx + 1;
   }
@@ -1058,8 +1073,8 @@ by method {
   {
     var i_ := i___keys[i___idx];
     var task := m.taskData[i_];
-    var i_t1 := isPriorityTask(task);
-    if i_t1 {
+    var i_t3 := isPriorityTask(task);
+    if i_t3 {
       count := (count + 1);
     }
     i___idx := i___idx + 1;
@@ -1079,8 +1094,8 @@ by method {
   {
     var i_ := i___keys[i___idx];
     var task := m.taskData[i_];
-    var i_t2 := isLogbookTask(task);
-    if i_t2 {
+    var i_t4 := isLogbookTask(task);
+    if i_t4 {
       count := (count + 1);
     }
     i___idx := i___idx + 1;

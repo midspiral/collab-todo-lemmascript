@@ -142,6 +142,14 @@ function eqIgnoreCase(a: string, b: string): boolean {
 // Helpers — pure sequence operations
 // ═══════════════════════════════════════════════════════════════
 
+function without<T>(s: T[], v: T): T[] {
+  //@ type T (==)
+  //@ decreases s.length
+  if (s.length === 0) return []
+  const rest = without(s.slice(1), v)
+  return s[0] !== v ? [s[0], ...rest] : rest
+}
+
 function insertAt<T>(s: T[], i: number, x: T): T[] {
   //@ requires i >= 0 && i <= s.length
   //@ ensures \result.length === s.length + 1
@@ -247,7 +255,7 @@ function removeTaskFromListsFrom(lists: ListId[], tasks: Record<number, TaskId[]
   const lane = tasks[lid]
   if (lane !== undefined) {
     return removeTaskFromListsFrom(lists,
-      { ...tasks, [lid]: lane.filter(id => id !== taskId) }, taskId, i + 1)
+      { ...tasks, [lid]: without(lane, taskId) }, taskId, i + 1)
   }
   return removeTaskFromListsFrom(lists, tasks, taskId, i + 1)
 }
@@ -278,7 +286,7 @@ function removeTagFromAllTasks(taskData: Record<number, Task>, tagId: TagId): Re
   const result = new Map<TaskId, Task>()
   //@ havoc
   for (const [tid, task] of taskData) {
-    const newTags = task.tags.filter(t => t !== tagId)
+    const newTags = without(task.tags, tagId)
     result.set(tid, { ...task, tags: newTags })
   }
   //@ as Record
@@ -291,7 +299,7 @@ function clearAssigneeFromAllTasks(taskData: Record<number, Task>, userId: UserI
   const result = new Map<TaskId, Task>()
   //@ havoc
   for (const [tid, task] of taskData) {
-    const newAssignees = task.assignees.filter(u => u !== userId)
+    const newAssignees = without(task.assignees, userId)
     result.set(tid, { ...task, assignees: newAssignees })
   }
   //@ as Record
@@ -351,7 +359,7 @@ function applyDeleteList(m: Model, listId: ListId): Result<Model, Err> {
   if (!m.lists.includes(listId)) return ok(m)
   const lane = m.tasks[listId] || []
   const newTaskData = removeKeysFromRecord(m.taskData, lane, 0)
-  const newLists = m.lists.filter(l => l !== listId)
+  const newLists = without(m.lists, listId)
   const { [listId]: _ln, ...newListNames } = m.listNames
   const { [listId]: _tk, ...newTasks } = m.tasks
   return ok({ ...m, lists: newLists, listNames: newListNames, tasks: newTasks, taskData: newTaskData })
@@ -361,9 +369,9 @@ function applyMoveList(m: Model, listId: ListId, listPlace: ListPlace): Result<M
   if (!m.lists.includes(listId)) return err('MissingList')
   const pos = posFromListPlace(m.lists, listPlace)
   if (pos < 0) return err('BadAnchor')
-  const without = m.lists.filter(l => l !== listId)
-  const clamped = Math.min(pos, without.length)
-  return ok({ ...m, lists: insertAt(without, clamped, listId) })
+  const listsWithout = without(m.lists, listId)
+  const clamped = Math.min(pos, listsWithout.length)
+  return ok({ ...m, lists: insertAt(listsWithout, clamped, listId) })
 }
 
 function applyAddTask(m: Model, listId: ListId, title: string): Result<Model, Err> {
@@ -468,7 +476,7 @@ function applyUnassignTask(m: Model, taskId: TaskId, userId: UserId): Result<Mod
   const task = m.taskData[taskId]
   if (task === undefined) return err('MissingTask')
   if (task.deleted) return err('TaskDeleted')
-  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, assignees: task.assignees.filter(u => u !== userId) } } })
+  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, assignees: without(task.assignees, userId) } } })
 }
 
 function applyAddTagToTask(m: Model, taskId: TaskId, tagId: TagId): Result<Model, Err> {
@@ -483,7 +491,7 @@ function applyRemoveTagFromTask(m: Model, taskId: TaskId, tagId: TagId): Result<
   const task = m.taskData[taskId]
   if (task === undefined) return err('MissingTask')
   if (task.deleted) return err('TaskDeleted')
-  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, tags: task.tags.filter(t => t !== tagId) } } })
+  return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, tags: without(task.tags, tagId) } } })
 }
 
 function applyCreateTag(m: Model, name: string): Result<Model, Err> {
@@ -520,7 +528,7 @@ function applyRemoveMember(m: Model, userId: UserId): Result<Model, Err> {
   if (userId === m.owner) return err('CannotRemoveOwner')
   if (!m.members.includes(userId)) return ok(m)
   const newTaskData = clearAssigneeFromAllTasks(m.taskData, userId)
-  return ok({ ...m, members: m.members.filter(u => u !== userId), taskData: newTaskData })
+  return ok({ ...m, members: without(m.members, userId), taskData: newTaskData })
 }
 
 //@ __mapFromArray
