@@ -873,7 +873,7 @@ function tryMoveListTo(mm: MultiModel, srcProjectId: ProjectId, dstProjectId: Pr
   return { projects: { ...mm.projects, [srcProjectId]: r2.value, [dstProjectId]: dstModel } }
 }
 
-function tryApplyMulti(mm: MultiModel, action: MultiAction): MultiModel {
+export function tryApplyMulti(mm: MultiModel, action: MultiAction): MultiModel {
   if (action.kind === 'SingleAction') {
     const project = mm.projects[action.projectId]
     if (project === undefined) return mm
