@@ -407,6 +407,7 @@ lemma RemoveTaskFromAllListsDomain(lists: seq<int>, tasks: map<int, seq<int>>, t
   RemoveTaskFromAllListsDomainHelper(lists, tasks, taskId, 0);
 }
 
+
 lemma RemoveTaskFromAllListsDomainHelper(lists: seq<int>, tasks: map<int, seq<int>>,
     taskId: int, i: int)
   requires 0 <= i <= |lists|
@@ -447,8 +448,7 @@ lemma RemoveTaskFromAllListsRemovesHelper(lists: seq<int>, tasks: map<int, seq<i
   if i < |lists| {
     var lid := lists[i];
     if lid in tasks {
-      var filtered := Std.Collections.Seq.Filter((id: TaskId) => (id != taskId), tasks[lid]);
-      // no longer needed — without is transparent
+      var filtered := without(tasks[lid], taskId);
       WithoutSubset(tasks[lid], taskId);
       WithoutRemoves(tasks[lid], taskId);
       var tasks' := tasks[lid := filtered];
@@ -462,6 +462,50 @@ lemma RemoveTaskFromAllListsRemovesHelper(lists: seq<int>, tasks: map<int, seq<i
     } else {
       assert forall j :: 0 <= j < i + 1 && lists[j] in tasks ==> taskId !in tasks[lists[j]];
       RemoveTaskFromAllListsRemovesHelper(lists, tasks, taskId, i + 1);
+    }
+  }
+}
+
+// For tid != taskId, membership in each lane is preserved by removeTaskFromAllLists
+lemma RemoveTaskFromAllListsPreservesOther(lists: seq<int>, tasks: map<int, seq<int>>, taskId: int)
+  requires forall l :: l in tasks ==> l in lists
+  requires forall l :: l in tasks ==> NoDupSeq(tasks[l])
+  ensures forall l :: l in removeTaskFromAllLists(lists, tasks, taskId) <==> l in tasks
+  ensures forall l :: l in tasks ==>
+    forall tid :: tid != taskId ==> (tid in removeTaskFromAllLists(lists, tasks, taskId)[l] <==> tid in tasks[l])
+  ensures forall l :: l in tasks ==>
+    NoDupSeq(removeTaskFromAllLists(lists, tasks, taskId)[l])
+{
+  RemoveTaskFromAllListsPreservesOtherHelper(lists, tasks, taskId, 0);
+}
+
+lemma RemoveTaskFromAllListsPreservesOtherHelper(lists: seq<int>, tasks: map<int, seq<int>>,
+    taskId: int, i: int)
+  requires 0 <= i <= |lists|
+  requires forall l :: l in tasks ==> l in lists
+  requires forall l :: l in tasks ==> NoDupSeq(tasks[l])
+  ensures forall l :: l in removeTaskFromListsFrom(lists, tasks, taskId, i) <==> l in tasks
+  ensures forall l :: l in tasks ==>
+    forall tid :: tid != taskId ==> (tid in removeTaskFromListsFrom(lists, tasks, taskId, i)[l] <==> tid in tasks[l])
+  ensures forall l :: l in tasks ==>
+    NoDupSeq(removeTaskFromListsFrom(lists, tasks, taskId, i)[l])
+  decreases |lists| - i
+{
+  if i < |lists| {
+    var lid := lists[i];
+    if lid in tasks {
+      WithoutPreservesNoDup(tasks[lid], taskId);
+      var tasks' := tasks[lid := without(tasks[lid], taskId)];
+      WithoutSubset(tasks[lid], taskId);
+      forall tid | tid != taskId
+        ensures tid in tasks'[lid] <==> tid in tasks[lid]
+      {
+        if tid in tasks[lid] { WithoutKeeps(tasks[lid], taskId, tid); }
+      }
+      assert forall l :: l in tasks' ==> l in lists;
+      RemoveTaskFromAllListsPreservesOtherHelper(lists, tasks', taskId, i + 1);
+    } else {
+      RemoveTaskFromAllListsPreservesOtherHelper(lists, tasks, taskId, i + 1);
     }
   }
 }
@@ -688,11 +732,40 @@ lemma MoveListPreservesInv(m: Model, listId: int, listPlace: ListPlace, m2: Mode
   requires apply(m, MoveList(listId, listPlace)) == true_(m2)
   ensures Inv(m2)
 {
-  // Only m.lists changes (reordered via filter + insertAt).
-  // All other fields unchanged. Proof blocked by opaque Std.Collections.Seq.Filter
-  // in apply's spec — cannot establish m2.lists identity for NoDupSeq/Count proofs.
-  // without is now transparent — no bridging needed.
-  assume {:axiom} false;
+  assert apply(m, MoveList(listId, listPlace)) == applyMoveList(m, listId, listPlace);
+  // m2.lists = insertAt(without(m.lists, listId), clamped, listId)
+  // All other fields unchanged.
+  assert m2.tasks == m.tasks;
+  assert m2.listNames == m.listNames;
+  assert m2.taskData == m.taskData;
+  assert m2.members == m.members;
+  assert m2.tags == m.tags;
+
+  var listsWithout := without(m.lists, listId);
+  WithoutPreservesNoDup(m.lists, listId);
+  WithoutRemoves(m.lists, listId);
+  WithoutSubset(m.lists, listId);
+  assert listId !in listsWithout;
+
+  var pos := posFromListPlace(m.lists, listPlace);
+  var clamped := MathMin(pos, |listsWithout|);
+  InsertAtPreservesNoDup(listsWithout, clamped, listId);
+
+  // B: same elements in lists
+  forall l
+    ensures l in m2.lists <==> l in m.lists
+  {
+    if l in m.lists {
+      if l == listId {
+        // listId is inserted back
+      } else {
+        WithoutKeeps(m.lists, listId, l);
+      }
+    }
+  }
+
+  // D/D': tasks unchanged, same list elements → same counts
+  CountSameElements(m, m2);
 }
 
 // insertAt(without, i, x) has same elements as without + {x}
@@ -730,7 +803,7 @@ lemma InsertAtContains(without: seq<int>, i: int, x: int, original: seq<int>)
   }
 }
 
-// Count unchanged when lists have the same elements
+// Count unchanged when lists have the same elements (permutation)
 lemma CountSameElements(m: Model, m2: Model)
   requires m2.tasks == m.tasks
   requires m2.taskData == m.taskData
@@ -739,9 +812,91 @@ lemma CountSameElements(m: Model, m2: Model)
   requires NoDupSeq(m2.lists)
   ensures forall tid :: CountInLists(m2, tid) == CountInLists(m, tid)
 {
-  // Both count the same set of lists with the same lanes
-  // TODO: this needs a permutation argument
-  assume {:axiom} false;
+  forall tid
+    ensures CountInLists(m2, tid) == CountInLists(m, tid)
+  {
+    CountPermutation(m.lists, m2.lists, m.tasks, tid);
+  }
+}
+
+// If two NoDupSeq sequences have the same elements, CountInListsHelper gives the same result
+lemma CountPermutation(s1: seq<int>, s2: seq<int>, tasks: map<int, seq<int>>, tid: int)
+  requires NoDupSeq(s1)
+  requires NoDupSeq(s2)
+  requires forall l :: l in s1 <==> l in s2
+  ensures CountInListsHelper(s1, tasks, tid) == CountInListsHelper(s2, tasks, tid)
+  decreases |s1|
+{
+  if |s1| == 0 {
+    // s2 must also be empty (same elements)
+    if |s2| > 0 { assert s2[0] in s2; assert s2[0] in s1; assert false; }
+  } else {
+    var h := s1[0];
+    assert h in s2;
+    // Remove h from both sequences
+    var s1' := s1[1..];
+    var s2' := without(s2, h);
+    // s1' and s2' have the same elements (s1 minus h, s2 minus h)
+    WithoutPreservesNoDup(s2, h);
+    forall l ensures l in s1' <==> l in s2' {
+      if l in s1' {
+        assert l in s1;
+        assert l in s2;
+        assert l != h; // because NoDupSeq(s1) and l in s1[1..]
+        WithoutKeeps(s2, h, l);
+      }
+      if l in s2' {
+        WithoutSubset(s2, h);
+        assert l in s2;
+        assert l in s1;
+        assert l != h;
+        // l in s1 && l != s1[0] → l in s1[1..]
+      }
+    }
+    CountPermutation(s1', s2', tasks, tid);
+    // Now: CountInListsHelper(s1, tasks, tid) = contribution(h) + CountInListsHelper(s1', tasks, tid)
+    //      CountInListsHelper(s2, tasks, tid) = ? — need to relate to removing h from s2
+    CountRemoveOne(s2, tasks, tid, h);
+    // CountInListsHelper(s2, tasks, tid) = contribution(h) + CountInListsHelper(without(s2, h), tasks, tid)
+  }
+}
+
+// Removing one element from a NoDupSeq: count = contribution + count of rest
+lemma CountRemoveOne(lists: seq<int>, tasks: map<int, seq<int>>, tid: int, h: int)
+  requires NoDupSeq(lists)
+  requires h in lists
+  ensures var lane := if h in tasks then tasks[h] else [];
+    var here := if tid in lane then 1 else 0;
+    CountInListsHelper(lists, tasks, tid) == here + CountInListsHelper(without(lists, h), tasks, tid)
+  decreases |lists|
+{
+  if |lists| > 0 {
+    if lists[0] == h {
+      // h is the head — without(lists, h) == lists[1..] (since NoDupSeq, h not in rest)
+      assert without(lists, h) == without(lists[1..], h);
+      // h !in lists[1..] by NoDupSeq
+      WithoutNotIn(lists[1..], h, h);
+      // Hmm, that's the wrong lemma — WithoutNotIn says if x !in s then x !in without(s,v)
+      // We need: if h !in lists[1..], then without(lists[1..], h) == lists[1..]
+      WithoutNoOp(lists[1..], h);
+    } else {
+      // h is not the head — recurse
+      assert h in lists[1..];
+      CountRemoveOne(lists[1..], tasks, tid, h);
+    }
+  }
+}
+
+// If v is not in s, without(s, v) == s
+lemma WithoutNoOp<T>(s: seq<T>, v: T)
+  requires v !in s
+  ensures without(s, v) == s
+  decreases |s|
+{
+  if |s| > 0 {
+    assert s[0] != v;
+    WithoutNoOp(s[1..], v);
+  }
 }
 
 // --- AddTask ---
@@ -750,17 +905,67 @@ lemma AddTaskPreservesInv(m: Model, listId: int, title: string, m2: Model)
   requires apply(m, AddTask(listId, title)) == true_(m2)
   ensures Inv(m2)
 {
+  assert apply(m, AddTask(listId, title)) == applyAddTask(m, listId, title);
   var id := m.nextTaskId;
-  var task := Task(title, "", false, false, None, [], [], false, None, None);
-  // id is fresh
+
+  // id is fresh (not in taskData, not in any lane)
   assert id !in m.taskData;
-  // The lane gets id appended
-  // D: new task (non-deleted) must have count 1
-  // C: id now in taskData
-  // E: id not in lane before (fresh), so appending preserves NoDup
-  // N: taskTitleExistsInList was false
-  // TODO: full proof with counting
-  assume {:axiom} false;
+  NotInTaskDataNotInLanes(m, id);
+  assert CountInLists(m, id) == 0;
+
+  // m2 = m with one lane extended and one new task
+  var lane := if listId in m.tasks then m.tasks[listId] else [];
+  assert m2.tasks == m.tasks[listId := lane + [id]];
+  assert m2.lists == m.lists;
+  assert m2.members == m.members;
+  assert m2.tags == m.tags;
+
+  // D/D': count for new task = 1, count for others unchanged
+  forall tid | tid in m2.taskData
+    ensures !m2.taskData[tid].deleted ==> CountInLists(m2, tid) == 1
+    ensures m2.taskData[tid].deleted ==> CountInLists(m2, tid) == 0
+  {
+    CountAfterAppendToLane(m, listId, id, tid);
+    if tid == id {
+      // new task: non-deleted, count goes from 0 to 1
+      assert !m2.taskData[id].deleted;
+    } else {
+      // existing task: count unchanged
+      assert m2.taskData[tid] == m.taskData[tid];
+    }
+  }
+
+  // E: NoDupSeq for the extended lane
+  assert id !in lane;
+  NoDupSeqAppend(lane, id);
+
+  // N: title uniqueness. New task `id` has title `title`.
+  // taskTitleExistsInList was false → no existing non-deleted task in listId has this title.
+  // For lists other than listId: lanes unchanged, tasks unchanged → N preserved.
+  // For listId: id is added. For pairs not involving id: unchanged. For pairs involving id:
+  //   other task's title != title (by taskTitleExistsInList check).
+  forall l, t1, t2 | l in m2.tasks
+      && t1 in m2.tasks[l] && t1 in m2.taskData && !m2.taskData[t1].deleted
+      && t2 in m2.tasks[l] && t2 in m2.taskData && !m2.taskData[t2].deleted
+      && t1 != t2
+    ensures !eqIgnoreCase(m2.taskData[t1].title, m2.taskData[t2].title)
+  {
+    if l != listId {
+      // Lane unchanged
+    } else if t1 != id && t2 != id {
+      // Both old tasks in old lane
+      assert t1 in m.tasks[listId];
+      assert t2 in m.tasks[listId];
+    } else {
+      // One is the new task (id), the other is old
+      var other := if t1 == id then t2 else t1;
+      assert other in m.tasks[listId];
+      assert other in m.taskData && !m.taskData[other].deleted;
+      // taskTitleExistsInList(m, listId, title, None) was false
+      assert !taskTitleExistsInList(m, listId, title, None);
+      TaskTitleExistsFromFalseHelper(m.tasks[listId], m.taskData, title, None, 0, other);
+    }
+  }
 }
 
 // --- EditTask ---
@@ -986,11 +1191,96 @@ lemma DeleteTaskPreservesInv(m: Model, taskId: int, userId: string, m2: Model)
   } else if m.taskData[taskId].deleted {
     assert m2 == m;
   } else {
-    // Task is soft-deleted: removed from all lists, marked deleted
-    // D: was count 1, now 0 (deleted)
-    // D': now deleted, count should be 0 after removeTaskFromAllLists
-    // TODO: need removeTaskFromAllLists properties
-    assume {:axiom} false;
+    assert apply(m, DeleteTask(taskId, userId)) == applyDeleteTask(m, taskId, userId);
+    var task := m.taskData[taskId];
+    var newTasks := removeTaskFromAllLists(m.lists, m.tasks, taskId);
+    assert m2.tasks == newTasks;
+    assert m2.lists == m.lists;
+    assert m2.members == m.members;
+    assert m2.tags == m.tags;
+
+    // Inv B: tasks keys == lists elements
+    assert forall l :: l in m.tasks ==> l in m.lists;
+
+    // removeTaskFromAllLists removes taskId from all lanes and preserves domain
+    RemoveTaskFromAllListsRemoves(m.lists, m.tasks, taskId);
+    RemoveTaskFromAllListsDomain(m.lists, m.tasks, taskId);
+    RemoveTaskFromAllListsPreservesOther(m.lists, m.tasks, taskId);
+
+    // D': deleted task count = 0 (taskId not in any lane after removal)
+    CountZeroWhenNotInAnyLane(m2.lists, m2.tasks, taskId);
+
+    // D/D' for other tasks: count unchanged (only taskId removed from lanes)
+    forall tid | tid in m2.taskData && tid != taskId
+      ensures CountInLists(m2, tid) == CountInLists(m, tid)
+    {
+      assert forall l :: l in m.tasks ==> (tid in newTasks[l] <==> tid in m.tasks[l]);
+      CountUnchangedAfterRemoveOther(m.lists, m.tasks, newTasks, taskId, tid);
+    }
+
+    // C: taskIds in lanes still in taskData — without only removes elements
+    forall l, tid | l in m2.tasks && tid in m2.tasks[l]
+      ensures tid in m2.taskData
+    {
+      // tid is in newTasks[l] = without(m.tasks[l], taskId)
+      // By WithoutSubset: tid was in m.tasks[l], and by Inv C: tid in m.taskData
+      if l in m.tasks {
+        WithoutSubset(m.tasks[l], taskId);
+      }
+    }
+
+    // E: NoDupSeq preserved — without preserves NoDupSeq
+    forall l | l in m2.tasks
+      ensures NoDupSeq(m2.tasks[l])
+    {
+      if l in m.tasks {
+        WithoutPreservesNoDup(m.tasks[l], taskId);
+      }
+    }
+
+    // N: title uniqueness — without only removes, doesn't change titles
+    forall l, t1, t2 | l in m2.tasks
+        && t1 in m2.tasks[l] && t1 in m2.taskData && !m2.taskData[t1].deleted
+        && t2 in m2.tasks[l] && t2 in m2.taskData && !m2.taskData[t2].deleted
+        && t1 != t2
+      ensures !eqIgnoreCase(m2.taskData[t1].title, m2.taskData[t2].title)
+    {
+      if l in m.tasks {
+        WithoutSubset(m.tasks[l], taskId);
+        assert t1 in m.tasks[l];
+        assert t2 in m.tasks[l];
+        // t1, t2 != taskId (they're not deleted, but taskId is now deleted)
+        assert m2.taskData[t1] == m.taskData[t1];
+        assert m2.taskData[t2] == m.taskData[t2];
+      }
+    }
+  }
+}
+
+// Count is 0 when taskId is not in any lane
+lemma CountZeroWhenNotInAnyLane(lists: seq<int>, tasks: map<int, seq<int>>, taskId: int)
+  requires forall l :: l in tasks ==> taskId !in tasks[l]
+  ensures CountInListsHelper(lists, tasks, taskId) == 0
+{
+  if |lists| > 0 {
+    var l := lists[0];
+    var lane := if l in tasks then tasks[l] else [];
+    assert taskId !in lane;
+    CountZeroWhenNotInAnyLane(lists[1..], tasks, taskId);
+  }
+}
+
+// Count unchanged for tasks other than the removed one
+lemma CountUnchangedAfterRemoveOther(lists: seq<int>, oldTasks: map<int, seq<int>>,
+    newTasks: map<int, seq<int>>, removed: int, tid: int)
+  requires tid != removed
+  requires forall l :: l in oldTasks <==> l in newTasks
+  // Key property: for tid != removed, membership in each lane is preserved
+  requires forall l :: l in oldTasks ==> (tid in newTasks[l] <==> tid in oldTasks[l])
+  ensures CountInListsHelper(lists, newTasks, tid) == CountInListsHelper(lists, oldTasks, tid)
+{
+  if |lists| > 0 {
+    CountUnchangedAfterRemoveOther(lists[1..], oldTasks, newTasks, removed, tid);
   }
 }
 
