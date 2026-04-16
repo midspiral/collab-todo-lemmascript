@@ -1102,13 +1102,10 @@ function baseVersionsFrom(touched: seq<ProjectId>, baseVersions: map<string, int
   else
     var pid := touched[i];
     var rest := baseVersionsFrom(touched, baseVersions, (i + 1));
-    var version := (if pid in baseVersions then Some(baseVersions[pid]) else None);
-    match version {
-      case Some(i_version_val) =>
-        rest[pid := i_version_val]
-      case None =>
-        rest
-    }
+    if (pid in baseVersions) then
+      rest[pid := baseVersions[pid]]
+    else
+      rest
 }
 
 function baseVersionsForAction(client: MultiClientState, action: MultiAction): map<string, int>

@@ -877,11 +877,10 @@ function baseVersionsFrom(touched: ProjectId[], baseVersions: Record<string, num
   if (i >= touched.length) return {}
   const pid = touched[i]
   const rest = baseVersionsFrom(touched, baseVersions, i + 1)
-  // Workaround for TODO: `{ ...rest, [pid]: baseVersions[pid] }` double-wraps
-  // the value in Option. Binding to a variable and using undefined-check avoids it.
-  const version = baseVersions[pid]
-  if (version === undefined) return rest
-  return { ...rest, [pid]: version }
+  if (pid in baseVersions) {
+    return { ...rest, [pid]: baseVersions[pid] }
+  }
+  return rest
 }
 
 function baseVersionsForAction(client: MultiClientState, action: MultiAction): Record<string, number> {
