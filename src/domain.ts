@@ -101,7 +101,7 @@ export type {
   TaskId, ListId, TagId, UserId,
   DateVal, Task, Tag, ProjectMode, Model,
   Place, ListPlace, Err, Result, Action,
-  ProjectId, MultiModel, MultiAction,
+  ProjectId, MultiModel, MultiAction, TaggedTask,
   NetworkStatus, EffectMode, MultiClientState, EffectState,
   EffectEvent, EffectCommand, StepResult,
 }
@@ -221,7 +221,7 @@ function taskTitleExistsInList(m: Model, listId: ListId, title: string, excludeT
 
 //@ pure
 function tagNameExists(m: Model, name: string, excludeTag?: TagId): boolean {
-  for (const [tid, tag] of m.tags) {
+  for (const [tid, tag] of Object.entries(m.tags)) {
     if (excludeTag === undefined || tid !== excludeTag) {
       if (eqIgnoreCase(tag.name, name)) return true
     }
@@ -288,7 +288,7 @@ function removeKeysFromRecord(rec: Record<number, Task>,
 function removeTagFromAllTasks(taskData: Record<number, Task>, tagId: TagId): Record<number, Task> {
   const result = new Map<TaskId, Task>()
   //@ havoc
-  for (const [tid, task] of taskData) {
+  for (const [tid, task] of Object.entries(taskData)) {
     const newTags = without(task.tags, tagId)
     result.set(tid, { ...task, tags: newTags })
   }
@@ -301,7 +301,7 @@ function removeTagFromAllTasks(taskData: Record<number, Task>, tagId: TagId): Re
 function clearAssigneeFromAllTasks(taskData: Record<number, Task>, userId: UserId): Record<number, Task> {
   const result = new Map<TaskId, Task>()
   //@ havoc
-  for (const [tid, task] of taskData) {
+  for (const [tid, task] of Object.entries(taskData)) {
     const newAssignees = without(task.assignees, userId)
     result.set(tid, { ...task, assignees: newAssignees })
   }
@@ -690,7 +690,7 @@ export function getTagName(m: Model, tagId: TagId): string | undefined {
 export function countPriorityTasks(m: Model): number {
   //@ ensures \result >= 0
   let count = 0
-  for (const [, task] of m.taskData) {
+  for (const task of Object.values(m.taskData)) {
     if (isPriorityTask(task)) count = count + 1
   }
   return count
@@ -700,7 +700,7 @@ export function countPriorityTasks(m: Model): number {
 export function countLogbookTasks(m: Model): number {
   //@ ensures \result >= 0
   let count = 0
-  for (const [, task] of m.taskData) {
+  for (const task of Object.values(m.taskData)) {
     if (isLogbookTask(task)) count = count + 1
   }
   return count
@@ -714,6 +714,11 @@ type ProjectId = string
 
 interface MultiModel {
   projects: Record<string, Model>
+}
+
+interface TaggedTask {
+  projectId: ProjectId
+  taskId: TaskId
 }
 
 type MultiAction =
@@ -816,11 +821,11 @@ function reapplyPending(mm: MultiModel, pending: MultiAction[]): MultiModel {
 function mergeVersions(base: Record<string, number>, updates: Record<string, number>): Record<string, number> {
   const result = new Map<string, number>()
   //@ havoc
-  for (const [pid, v] of base) {
+  for (const [pid, v] of Object.entries(base)) {
     result.set(pid, v)
   }
   //@ havoc
-  for (const [pid, v] of updates) {
+  for (const [pid, v] of Object.entries(updates)) {
     result.set(pid, v)
   }
   //@ as Record
@@ -831,11 +836,11 @@ function mergeVersions(base: Record<string, number>, updates: Record<string, num
 function mergeModels(base: Record<string, Model>, updates: Record<string, Model>): Record<string, Model> {
   const result = new Map<string, Model>()
   //@ havoc
-  for (const [pid, m] of base) {
+  for (const [pid, m] of Object.entries(base)) {
     result.set(pid, m)
   }
   //@ havoc
-  for (const [pid, m] of updates) {
+  for (const [pid, m] of Object.entries(updates)) {
     result.set(pid, m)
   }
   //@ as Record
@@ -1062,4 +1067,46 @@ export function initEffect(versions: Record<string, number>, models: Record<stri
       pending: [],
     },
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Multi-Project View Helpers (for UI)
+// ═══════════════════════════════════════════════════════════════
+
+export function getAllPriorityTasks(mm: MultiModel): TaggedTask[] {
+  const result: TaggedTask[] = []
+  for (const [projectId, model] of Object.entries(mm.projects)) {
+    for (const [taskIdStr, task] of Object.entries(model.taskData)) {
+      if (isPriorityTask(task)) result.push({ projectId, taskId: Number(taskIdStr) })
+    }
+  }
+  return result
+}
+
+export function getAllLogbookTasks(mm: MultiModel): TaggedTask[] {
+  const result: TaggedTask[] = []
+  for (const [projectId, model] of Object.entries(mm.projects)) {
+    for (const [taskIdStr, task] of Object.entries(model.taskData)) {
+      if (isLogbookTask(task)) result.push({ projectId, taskId: Number(taskIdStr) })
+    }
+  }
+  return result
+}
+
+export function getAllVisibleTasks(mm: MultiModel): TaggedTask[] {
+  const result: TaggedTask[] = []
+  for (const [projectId, model] of Object.entries(mm.projects)) {
+    for (const [taskIdStr, task] of Object.entries(model.taskData)) {
+      if (isVisibleTask(task)) result.push({ projectId, taskId: Number(taskIdStr) })
+    }
+  }
+  return result
+}
+
+export function getDeletedTaskIds(m: Model): TaskId[] {
+  const result: TaskId[] = []
+  for (const [taskIdStr, task] of Object.entries(m.taskData)) {
+    if (task.deleted) result.push(Number(taskIdStr))
+  }
+  return result
 }

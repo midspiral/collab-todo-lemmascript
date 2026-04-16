@@ -87,6 +87,8 @@ type ProjectId = string
 
 datatype MultiModel = MultiModel(projects: map<string, Model>)
 
+datatype TaggedTask = TaggedTask(projectId: string, taskId: int)
+
 datatype MultiAction = SingleAction(projectId: string, action: Action)
 
 datatype NetworkStatus = Online | Offline
@@ -1437,6 +1439,112 @@ by method {
     var m := updates[pid];
     result := result[pid := m];
     i_pid_idx2 := i_pid_idx2 + 1;
+  }
+  return result;
+}
+
+method getAllPriorityTasks(mm: MultiModel) returns (res: seq<TaggedTask>)
+{
+  var result: seq<TaggedTask> := [];
+  var i_projectId_keys := SetToSeq(mm.projects.Keys);
+  var i_projectId_idx := 0;
+  while i_projectId_idx < |i_projectId_keys|
+    invariant (i_projectId_idx <= |i_projectId_keys|)
+  {
+    var projectId := i_projectId_keys[i_projectId_idx];
+    var model := mm.projects[projectId];
+    var i_taskIdStr_keys := SetToSeq(model.taskData.Keys);
+    var i_taskIdStr_idx := 0;
+    while i_taskIdStr_idx < |i_taskIdStr_keys|
+      invariant (i_taskIdStr_idx <= |i_taskIdStr_keys|)
+    {
+      var taskIdStr := i_taskIdStr_keys[i_taskIdStr_idx];
+      var task := model.taskData[taskIdStr];
+      var i_t5 := isPriorityTask(task);
+      if i_t5 {
+        var i_t6 := taskIdStr;
+        result := (result + [TaggedTask(projectId, i_t6)]);
+      }
+      i_taskIdStr_idx := i_taskIdStr_idx + 1;
+    }
+    i_projectId_idx := i_projectId_idx + 1;
+  }
+  return result;
+}
+
+method getAllLogbookTasks(mm: MultiModel) returns (res: seq<TaggedTask>)
+{
+  var result: seq<TaggedTask> := [];
+  var i_projectId_keys := SetToSeq(mm.projects.Keys);
+  var i_projectId_idx := 0;
+  while i_projectId_idx < |i_projectId_keys|
+    invariant (i_projectId_idx <= |i_projectId_keys|)
+  {
+    var projectId := i_projectId_keys[i_projectId_idx];
+    var model := mm.projects[projectId];
+    var i_taskIdStr_keys := SetToSeq(model.taskData.Keys);
+    var i_taskIdStr_idx := 0;
+    while i_taskIdStr_idx < |i_taskIdStr_keys|
+      invariant (i_taskIdStr_idx <= |i_taskIdStr_keys|)
+    {
+      var taskIdStr := i_taskIdStr_keys[i_taskIdStr_idx];
+      var task := model.taskData[taskIdStr];
+      var i_t7 := isLogbookTask(task);
+      if i_t7 {
+        var i_t8 := taskIdStr;
+        result := (result + [TaggedTask(projectId, i_t8)]);
+      }
+      i_taskIdStr_idx := i_taskIdStr_idx + 1;
+    }
+    i_projectId_idx := i_projectId_idx + 1;
+  }
+  return result;
+}
+
+method getAllVisibleTasks(mm: MultiModel) returns (res: seq<TaggedTask>)
+{
+  var result: seq<TaggedTask> := [];
+  var i_projectId_keys := SetToSeq(mm.projects.Keys);
+  var i_projectId_idx := 0;
+  while i_projectId_idx < |i_projectId_keys|
+    invariant (i_projectId_idx <= |i_projectId_keys|)
+  {
+    var projectId := i_projectId_keys[i_projectId_idx];
+    var model := mm.projects[projectId];
+    var i_taskIdStr_keys := SetToSeq(model.taskData.Keys);
+    var i_taskIdStr_idx := 0;
+    while i_taskIdStr_idx < |i_taskIdStr_keys|
+      invariant (i_taskIdStr_idx <= |i_taskIdStr_keys|)
+    {
+      var taskIdStr := i_taskIdStr_keys[i_taskIdStr_idx];
+      var task := model.taskData[taskIdStr];
+      var i_t9 := isVisibleTask(task);
+      if i_t9 {
+        var i_t10 := taskIdStr;
+        result := (result + [TaggedTask(projectId, i_t10)]);
+      }
+      i_taskIdStr_idx := i_taskIdStr_idx + 1;
+    }
+    i_projectId_idx := i_projectId_idx + 1;
+  }
+  return result;
+}
+
+method getDeletedTaskIds(m: Model) returns (res: seq<TaskId>)
+{
+  var result: seq<int> := [];
+  var i_taskIdStr_keys := SetToSeq(m.taskData.Keys);
+  var i_taskIdStr_idx := 0;
+  while i_taskIdStr_idx < |i_taskIdStr_keys|
+    invariant (i_taskIdStr_idx <= |i_taskIdStr_keys|)
+  {
+    var taskIdStr := i_taskIdStr_keys[i_taskIdStr_idx];
+    var task := m.taskData[taskIdStr];
+    if task.deleted {
+      var i_t11 := taskIdStr;
+      result := (result + [i_t11]);
+    }
+    i_taskIdStr_idx := i_taskIdStr_idx + 1;
   }
   return result;
 }
