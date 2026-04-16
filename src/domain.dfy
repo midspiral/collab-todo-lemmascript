@@ -89,7 +89,7 @@ datatype MultiModel = MultiModel(projects: map<string, Model>)
 
 datatype TaggedTask = TaggedTask(projectId: string, taskId: int)
 
-datatype MultiAction = SingleAction(projectId: string, action: Action)
+datatype MultiAction = SingleAction(projectId: string, action: Action) | MoveTaskTo(srcProject: string, dstProject: string, taskId: int, dstList: int, taskPlace: Place) | CopyTaskTo(srcProject: string, dstProject: string, taskId: int, dstList: int) | MoveListTo(srcProject: string, dstProject: string, listId: int)
 
 datatype NetworkStatus = Online | Offline
 
@@ -1024,6 +1024,12 @@ function touchedProjects(action: MultiAction): seq<ProjectId>
   match action {
     case SingleAction(i_action_projectId, i_action_action) =>
       [i_action_projectId]
+    case MoveTaskTo(i_action_srcProject, i_action_dstProject, i_action_taskId, i_action_dstList, i_action_taskPlace) =>
+      [i_action_srcProject, i_action_dstProject]
+    case CopyTaskTo(i_action_srcProject, i_action_dstProject, i_action_taskId, i_action_dstList) =>
+      [i_action_srcProject, i_action_dstProject]
+    case MoveListTo(i_action_srcProject, i_action_dstProject, i_action_listId) =>
+      [i_action_srcProject, i_action_dstProject]
   }
 }
 
@@ -1032,6 +1038,151 @@ function allProjectsLoaded(mm: MultiModel, action: MultiAction): bool
   match action {
     case SingleAction(i_action_projectId, i_action_action) =>
       (i_action_projectId in mm.projects)
+    case _ =>
+      if ((action.MoveTaskTo? || action.CopyTaskTo?) || action.MoveListTo?) then
+        ((action.srcProject in mm.projects) && (action.dstProject in mm.projects))
+      else
+        false
+  }
+}
+
+function tryMoveTaskTo(mm: MultiModel, srcProjectId: ProjectId, dstProjectId: ProjectId, taskId: TaskId, dstList: ListId, taskPlace: Place): MultiModel
+{
+  var src := (if srcProjectId in mm.projects then Some(mm.projects[srcProjectId]) else None);
+  match src {
+    case Some(i_src_val) =>
+      var dst := (if dstProjectId in mm.projects then Some(mm.projects[dstProjectId]) else None);
+      match dst {
+        case Some(i_dst_val) =>
+          var task := (if taskId in i_src_val.taskData then Some(i_src_val.taskData[taskId]) else None);
+          match task {
+            case Some(i_task_val) =>
+              if i_task_val.deleted then
+                mm
+              else
+                var r1 := apply(i_src_val, DeleteTask(taskId, i_src_val.owner));
+                if !(r1.true_?) then
+                  mm
+                else
+                  var dstModel := copyTaskToModel(i_task_val, i_dst_val, dstList);
+                  MultiModel(mm.projects[srcProjectId := r1.value][dstProjectId := dstModel])
+            case None =>
+              mm
+          }
+        case None =>
+          mm
+      }
+    case None =>
+      mm
+  }
+}
+
+function tryCopyTaskTo(mm: MultiModel, srcProjectId: ProjectId, dstProjectId: ProjectId, taskId: TaskId, dstList: ListId): MultiModel
+{
+  var src := (if srcProjectId in mm.projects then Some(mm.projects[srcProjectId]) else None);
+  match src {
+    case Some(i_src_val) =>
+      var dst := (if dstProjectId in mm.projects then Some(mm.projects[dstProjectId]) else None);
+      match dst {
+        case Some(i_dst_val) =>
+          var task := (if taskId in i_src_val.taskData then Some(i_src_val.taskData[taskId]) else None);
+          match task {
+            case Some(i_task_val) =>
+              if i_task_val.deleted then
+                mm
+              else
+                var dstModel := copyTaskToModel(i_task_val, i_dst_val, dstList);
+                MultiModel(mm.projects[dstProjectId := dstModel])
+            case None =>
+              mm
+          }
+        case None =>
+          mm
+      }
+    case None =>
+      mm
+  }
+}
+
+function applyOk(m: Model, a: Action): Model
+{
+  var r := apply(m, a);
+  if r.true_? then
+    r.value
+  else
+    m
+}
+
+function copyTaskToModel(srcTask: Task, dstModel: Model, dstList: ListId): Model
+{
+  var r := apply(dstModel, AddTask(dstList, srcTask.title));
+  if !(r.true_?) then
+    dstModel
+  else
+    var newTid := (r.value.nextTaskId - 1);
+    var m1 := if (srcTask.notes != "") then applyOk(r.value, EditTask(newTid, srcTask.title, srcTask.notes)) else r.value;
+    var m2 := if srcTask.starred then applyOk(m1, StarTask(newTid)) else m1;
+    var m3 := if srcTask.completed then applyOk(m2, CompleteTask(newTid)) else m2;
+    var m4 := applyOk(m3, SetDueDate(newTid, srcTask.dueDate));
+    m4
+}
+
+function copyTasksFromLane(lane: seq<TaskId>, taskData: map<int, Task>, dstModel: Model, dstList: ListId, i: int): Model
+  requires (i >= 0)
+  requires (i <= |lane|)
+  decreases (|lane| - i)
+{
+  if (i >= |lane|) then
+    dstModel
+  else
+    var tid := lane[i];
+    var task := (if tid in taskData then Some(taskData[tid]) else None);
+    match task {
+      case Some(i_task_val) =>
+        if i_task_val.deleted then
+          copyTasksFromLane(lane, taskData, dstModel, dstList, (i + 1))
+        else
+          var newDst := copyTaskToModel(i_task_val, dstModel, dstList);
+          copyTasksFromLane(lane, taskData, newDst, dstList, (i + 1))
+      case None =>
+        copyTasksFromLane(lane, taskData, dstModel, dstList, (i + 1))
+    }
+}
+
+function tryMoveListTo(mm: MultiModel, srcProjectId: ProjectId, dstProjectId: ProjectId, listId: ListId): MultiModel
+{
+  var src := (if srcProjectId in mm.projects then Some(mm.projects[srcProjectId]) else None);
+  match src {
+    case Some(i_src_val) =>
+      var dst := (if dstProjectId in mm.projects then Some(mm.projects[dstProjectId]) else None);
+      match dst {
+        case Some(i_dst_val) =>
+          if !((listId in i_src_val.lists)) then
+            mm
+          else
+            var listName := (if listId in i_src_val.listNames then Some(i_src_val.listNames[listId]) else None);
+            match listName {
+              case Some(i_listName_val) =>
+                var r1 := apply(i_dst_val, AddList(i_listName_val));
+                if !(r1.true_?) then
+                  mm
+                else
+                  var newListId := (r1.value.nextListId - 1);
+                  var lane := (match (if listId in i_src_val.tasks then Some(i_src_val.tasks[listId]) else None) { case Some(i_value) => i_value case None => [] });
+                  var dstModel := copyTasksFromLane(lane, i_src_val.taskData, r1.value, newListId, 0);
+                  var r2 := apply(i_src_val, DeleteList(listId));
+                  if !(r2.true_?) then
+                    mm
+                  else
+                    MultiModel(mm.projects[srcProjectId := r2.value][dstProjectId := dstModel])
+              case None =>
+                mm
+            }
+        case None =>
+          mm
+      }
+    case None =>
+      mm
   }
 }
 
@@ -1050,6 +1201,12 @@ function tryApplyMulti(mm: MultiModel, action: MultiAction): MultiModel
         case None =>
           mm
       }
+    case MoveTaskTo(i_action_srcProject, i_action_dstProject, i_action_taskId, i_action_dstList, i_action_taskPlace) =>
+      tryMoveTaskTo(mm, i_action_srcProject, i_action_dstProject, i_action_taskId, i_action_dstList, i_action_taskPlace)
+    case CopyTaskTo(i_action_srcProject, i_action_dstProject, i_action_taskId, i_action_dstList) =>
+      tryCopyTaskTo(mm, i_action_srcProject, i_action_dstProject, i_action_taskId, i_action_dstList)
+    case MoveListTo(i_action_srcProject, i_action_dstProject, i_action_listId) =>
+      tryMoveListTo(mm, i_action_srcProject, i_action_dstProject, i_action_listId)
   }
 }
 
@@ -1381,8 +1538,8 @@ by method {
     var task := m.taskData[i_];
     var i_t3 := isPriorityTask(task);
     if i_t3 {
-      matched := matched + {i_};
       count := (count + 1);
+      matched := matched + {i_};
     }
     i___idx := i___idx + 1;
   }
@@ -1409,8 +1566,8 @@ by method {
     var task := m.taskData[i_];
     var i_t4 := isLogbookTask(task);
     if i_t4 {
-      matched := matched + {i_};
       count := (count + 1);
+      matched := matched + {i_};
     }
     i___idx := i___idx + 1;
   }

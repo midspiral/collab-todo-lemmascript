@@ -723,6 +723,9 @@ interface TaggedTask {
 
 type MultiAction =
   | { kind: 'SingleAction'; projectId: ProjectId; action: Action }
+  | { kind: 'MoveTaskTo'; srcProject: ProjectId; dstProject: ProjectId; taskId: TaskId; dstList: ListId; taskPlace: Place }
+  | { kind: 'CopyTaskTo'; srcProject: ProjectId; dstProject: ProjectId; taskId: TaskId; dstList: ListId }
+  | { kind: 'MoveListTo'; srcProject: ProjectId; dstProject: ProjectId; listId: ListId }
 
 type NetworkStatus = 'Online' | 'Offline'
 
@@ -776,6 +779,9 @@ const MAX_RETRIES: number = 5
 
 export function touchedProjects(action: MultiAction): ProjectId[] {
   if (action.kind === 'SingleAction') return [action.projectId]
+  if (action.kind === 'MoveTaskTo') return [action.srcProject, action.dstProject]
+  if (action.kind === 'CopyTaskTo') return [action.srcProject, action.dstProject]
+  if (action.kind === 'MoveListTo') return [action.srcProject, action.dstProject]
   return []
 }
 
@@ -783,7 +789,88 @@ function allProjectsLoaded(mm: MultiModel, action: MultiAction): boolean {
   if (action.kind === 'SingleAction') {
     return action.projectId in mm.projects
   }
+  if (action.kind === 'MoveTaskTo' || action.kind === 'CopyTaskTo' || action.kind === 'MoveListTo') {
+    return action.srcProject in mm.projects && action.dstProject in mm.projects
+  }
   return false
+}
+
+function tryMoveTaskTo(mm: MultiModel, srcProjectId: ProjectId, dstProjectId: ProjectId,
+    taskId: TaskId, dstList: ListId, taskPlace: Place): MultiModel {
+  const src = mm.projects[srcProjectId]
+  if (src === undefined) return mm
+  const dst = mm.projects[dstProjectId]
+  if (dst === undefined) return mm
+  const task = src.taskData[taskId]
+  if (task === undefined) return mm
+  if (task.deleted) return mm
+  const r1 = apply(src, { kind: 'DeleteTask', taskId, userId: src.owner })
+  if (!r1.ok) return mm
+  const dstModel = copyTaskToModel(task, dst, dstList)
+  return { projects: { ...mm.projects, [srcProjectId]: r1.value, [dstProjectId]: dstModel } }
+}
+
+function tryCopyTaskTo(mm: MultiModel, srcProjectId: ProjectId, dstProjectId: ProjectId,
+    taskId: TaskId, dstList: ListId): MultiModel {
+  const src = mm.projects[srcProjectId]
+  if (src === undefined) return mm
+  const dst = mm.projects[dstProjectId]
+  if (dst === undefined) return mm
+  const task = src.taskData[taskId]
+  if (task === undefined) return mm
+  if (task.deleted) return mm
+  const dstModel = copyTaskToModel(task, dst, dstList)
+  return { projects: { ...mm.projects, [dstProjectId]: dstModel } }
+}
+
+function applyOk(m: Model, a: Action): Model {
+  const r = apply(m, a)
+  return r.ok ? r.value : m
+}
+
+function copyTaskToModel(srcTask: Task, dstModel: Model, dstList: ListId): Model {
+  const r = apply(dstModel, { kind: 'AddTask', listId: dstList, title: srcTask.title })
+  if (!r.ok) return dstModel
+  const newTid = r.value.nextTaskId - 1
+  const m1 = srcTask.notes !== '' ? applyOk(r.value, { kind: 'EditTask', taskId: newTid, title: srcTask.title, notes: srcTask.notes }) : r.value
+  const m2 = srcTask.starred ? applyOk(m1, { kind: 'StarTask', taskId: newTid }) : m1
+  const m3 = srcTask.completed ? applyOk(m2, { kind: 'CompleteTask', taskId: newTid }) : m2
+  const m4 = applyOk(m3, { kind: 'SetDueDate', taskId: newTid, dueDate: srcTask.dueDate })
+  return m4
+}
+
+function copyTasksFromLane(lane: TaskId[], taskData: Record<number, Task>,
+    dstModel: Model, dstList: ListId, i: number): Model {
+  //@ requires i >= 0 && i <= lane.length
+  //@ decreases lane.length - i
+  if (i >= lane.length) return dstModel
+  const tid = lane[i]
+  const task = taskData[tid]
+  if (task === undefined) return copyTasksFromLane(lane, taskData, dstModel, dstList, i + 1)
+  if (task.deleted) {
+    return copyTasksFromLane(lane, taskData, dstModel, dstList, i + 1)
+  }
+  const newDst = copyTaskToModel(task, dstModel, dstList)
+  return copyTasksFromLane(lane, taskData, newDst, dstList, i + 1)
+}
+
+function tryMoveListTo(mm: MultiModel, srcProjectId: ProjectId, dstProjectId: ProjectId,
+    listId: ListId): MultiModel {
+  const src = mm.projects[srcProjectId]
+  if (src === undefined) return mm
+  const dst = mm.projects[dstProjectId]
+  if (dst === undefined) return mm
+  if (!src.lists.includes(listId)) return mm
+  const listName = src.listNames[listId]
+  if (listName === undefined) return mm
+  const r1 = apply(dst, { kind: 'AddList', name: listName })
+  if (!r1.ok) return mm
+  const newListId = r1.value.nextListId - 1
+  const lane = src.tasks[listId] || []
+  const dstModel = copyTasksFromLane(lane, src.taskData, r1.value, newListId, 0)
+  const r2 = apply(src, { kind: 'DeleteList', listId })
+  if (!r2.ok) return mm
+  return { projects: { ...mm.projects, [srcProjectId]: r2.value, [dstProjectId]: dstModel } }
 }
 
 function tryApplyMulti(mm: MultiModel, action: MultiAction): MultiModel {
@@ -793,6 +880,15 @@ function tryApplyMulti(mm: MultiModel, action: MultiAction): MultiModel {
     const result = apply(project, action.action)
     if (!result.ok) return mm
     return { projects: { ...mm.projects, [action.projectId]: result.value } }
+  }
+  if (action.kind === 'MoveTaskTo') {
+    return tryMoveTaskTo(mm, action.srcProject, action.dstProject, action.taskId, action.dstList, action.taskPlace)
+  }
+  if (action.kind === 'CopyTaskTo') {
+    return tryCopyTaskTo(mm, action.srcProject, action.dstProject, action.taskId, action.dstList)
+  }
+  if (action.kind === 'MoveListTo') {
+    return tryMoveListTo(mm, action.srcProject, action.dstProject, action.listId)
   }
   return mm
 }
