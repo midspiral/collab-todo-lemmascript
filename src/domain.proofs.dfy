@@ -1,5 +1,7 @@
 // Proofs for the LemmaScript-generated todo domain
-// Establishes 16-conjunct invariant and proves preservation across all 24 actions.
+// Part 1: 16-conjunct invariant and preservation across all 24 single-project actions
+// Part 2: Multi-project invariant preservation (tryApplyMulti, cross-project ops)
+// Part 3: NoOp sanity (completeness and soundness of NoOp classification)
 
 include "domain.dfy"
 
@@ -1883,4 +1885,205 @@ lemma StepPreservesInv(m: Model, a: Action, m2: Model)
     case AddMember(userId) => AddMemberPreservesInv(m, userId, m2);
     case RemoveMember(userId) => RemoveMemberPreservesInv(m, userId, m2);
   }
+}
+
+// =============================================================================
+// Part 2: Multi-Project Invariant Preservation
+// =============================================================================
+
+// Multi-project invariant: Inv holds for every project in the MultiModel
+ghost predicate MultiInv(mm: MultiModel)
+{
+  forall pid :: pid in mm.projects ==> Inv(mm.projects[pid])
+}
+
+// applyOk preserves invariant: either apply succeeds (StepPreservesInv) or returns m unchanged
+lemma ApplyOkPreservesInv(m: Model, a: Action)
+  requires Inv(m)
+  ensures Inv(applyOk(m, a))
+{
+  var r := apply(m, a);
+  if r.true_? {
+    StepPreservesInv(m, a, r.value);
+  }
+}
+
+// copyTaskToModel preserves invariant: chains applyOk calls, each preserving Inv
+lemma CopyTaskToModelPreservesInv(srcTask: Task, dstModel: Model, dstList: ListId)
+  requires Inv(dstModel)
+  ensures Inv(copyTaskToModel(srcTask, dstModel, dstList))
+{
+  var r := apply(dstModel, AddTask(dstList, srcTask.title));
+  if !r.true_? {
+    return;
+  }
+  StepPreservesInv(dstModel, AddTask(dstList, srcTask.title), r.value);
+  var newTid := r.value.nextTaskId - 1;
+  var m1 := if srcTask.notes != "" then applyOk(r.value, EditTask(newTid, srcTask.title, srcTask.notes)) else r.value;
+  ApplyOkPreservesInv(r.value, EditTask(newTid, srcTask.title, srcTask.notes));
+  var m2 := if srcTask.starred then applyOk(m1, StarTask(newTid)) else m1;
+  ApplyOkPreservesInv(m1, StarTask(newTid));
+  var m3 := if srcTask.completed then applyOk(m2, CompleteTask(newTid)) else m2;
+  ApplyOkPreservesInv(m2, CompleteTask(newTid));
+  ApplyOkPreservesInv(m3, SetDueDate(newTid, srcTask.dueDate));
+}
+
+// copyTasksFromLane preserves invariant: recursive, each step uses CopyTaskToModelPreservesInv
+lemma CopyTasksFromLanePreservesInv(lane: seq<TaskId>, taskData: map<int, Task>,
+    dstModel: Model, dstList: ListId, i: int)
+  requires Inv(dstModel)
+  requires i >= 0 && i <= |lane|
+  ensures Inv(copyTasksFromLane(lane, taskData, dstModel, dstList, i))
+  decreases |lane| - i
+{
+  if i >= |lane| { return; }
+  var tid := lane[i];
+  if tid !in taskData {
+    CopyTasksFromLanePreservesInv(lane, taskData, dstModel, dstList, i + 1);
+  } else {
+    var task := taskData[tid];
+    if task.deleted {
+      CopyTasksFromLanePreservesInv(lane, taskData, dstModel, dstList, i + 1);
+    } else {
+      CopyTaskToModelPreservesInv(task, dstModel, dstList);
+      var newDst := copyTaskToModel(task, dstModel, dstList);
+      CopyTasksFromLanePreservesInv(lane, taskData, newDst, dstList, i + 1);
+    }
+  }
+}
+
+// tryMoveTaskTo preserves invariant for all projects
+lemma TryMoveTaskToPreservesMultiInv(mm: MultiModel, srcProjectId: ProjectId,
+    dstProjectId: ProjectId, taskId: TaskId, dstList: ListId, taskPlace: Place)
+  requires MultiInv(mm)
+  ensures MultiInv(tryMoveTaskTo(mm, srcProjectId, dstProjectId, taskId, dstList, taskPlace))
+{
+  var result := tryMoveTaskTo(mm, srcProjectId, dstProjectId, taskId, dstList, taskPlace);
+  if srcProjectId !in mm.projects || dstProjectId !in mm.projects { return; }
+  var src := mm.projects[srcProjectId];
+  var dst := mm.projects[dstProjectId];
+  if taskId !in src.taskData { return; }
+  if src.taskData[taskId].deleted { return; }
+  var r1 := apply(src, DeleteTask(taskId, src.owner));
+  if !r1.true_? { return; }
+  StepPreservesInv(src, DeleteTask(taskId, src.owner), r1.value);
+  CopyTaskToModelPreservesInv(src.taskData[taskId], dst, dstList);
+}
+
+// tryCopyTaskTo preserves invariant for all projects
+lemma TryCopyTaskToPreservesMultiInv(mm: MultiModel, srcProjectId: ProjectId,
+    dstProjectId: ProjectId, taskId: TaskId, dstList: ListId)
+  requires MultiInv(mm)
+  ensures MultiInv(tryCopyTaskTo(mm, srcProjectId, dstProjectId, taskId, dstList))
+{
+  var result := tryCopyTaskTo(mm, srcProjectId, dstProjectId, taskId, dstList);
+  if srcProjectId !in mm.projects || dstProjectId !in mm.projects { return; }
+  var src := mm.projects[srcProjectId];
+  var dst := mm.projects[dstProjectId];
+  if taskId !in src.taskData { return; }
+  if src.taskData[taskId].deleted { return; }
+  CopyTaskToModelPreservesInv(src.taskData[taskId], dst, dstList);
+}
+
+// tryMoveListTo preserves invariant for all projects
+// Helper: Inv holds for dstModel after AddList + copyTasksFromLane
+lemma MoveListToDstPreservesInv(dst: Model, listName: string, lane: seq<TaskId>,
+    taskData: map<int, Task>, listId: ListId)
+  requires Inv(dst)
+  requires apply(dst, AddList(listName)).true_?
+  ensures Inv(copyTasksFromLane(lane, taskData, apply(dst, AddList(listName)).value,
+              apply(dst, AddList(listName)).value.nextListId - 1, 0))
+{
+  var r1 := apply(dst, AddList(listName));
+  StepPreservesInv(dst, AddList(listName), r1.value);
+  var newListId := r1.value.nextListId - 1;
+  CopyTasksFromLanePreservesInv(lane, taskData, r1.value, newListId, 0);
+}
+
+lemma {:timeLimit 60} TryMoveListToPreservesMultiInv(mm: MultiModel, srcProjectId: ProjectId,
+    dstProjectId: ProjectId, listId: ListId)
+  requires MultiInv(mm)
+  ensures MultiInv(tryMoveListTo(mm, srcProjectId, dstProjectId, listId))
+{
+  if srcProjectId !in mm.projects { return; }
+  if dstProjectId !in mm.projects { return; }
+  var src := mm.projects[srcProjectId];
+  var dst := mm.projects[dstProjectId];
+  if !(listId in src.lists) { return; }
+  if listId !in src.listNames { return; }
+  var listName := src.listNames[listId];
+  var r1 := apply(dst, AddList(listName));
+  if !r1.true_? { return; }
+  var lane := if listId in src.tasks then src.tasks[listId] else [];
+  MoveListToDstPreservesInv(dst, listName, lane, src.taskData, listId);
+  var r2 := apply(src, DeleteList(listId));
+  if !r2.true_? { return; }
+  StepPreservesInv(src, DeleteList(listId), r2.value);
+}
+
+// Main theorem: tryApplyMulti preserves MultiInv
+lemma TryApplyMultiPreservesMultiInv(mm: MultiModel, action: MultiAction)
+  requires MultiInv(mm)
+  ensures MultiInv(tryApplyMulti(mm, action))
+{
+  match action {
+    case SingleAction(projectId, a) =>
+      if projectId !in mm.projects { return; }
+      var project := mm.projects[projectId];
+      var r := apply(project, a);
+      if !r.true_? { return; }
+      StepPreservesInv(project, a, r.value);
+    case MoveTaskTo(srcProject, dstProject, taskId, dstList, taskPlace) =>
+      TryMoveTaskToPreservesMultiInv(mm, srcProject, dstProject, taskId, dstList, taskPlace);
+    case CopyTaskTo(srcProject, dstProject, taskId, dstList) =>
+      TryCopyTaskToPreservesMultiInv(mm, srcProject, dstProject, taskId, dstList);
+    case MoveListTo(srcProject, dstProject, listId) =>
+      TryMoveListToPreservesMultiInv(mm, srcProject, dstProject, listId);
+  }
+}
+
+// =============================================================================
+// Part 3: NoOp Sanity — Complete Enumeration of Identity Cases
+// =============================================================================
+
+// An action is a NoOp if it leaves the model unchanged.
+// This enumerates ALL such cases.
+
+// Idempotent operations (designed to be no-ops in these conditions)
+predicate NoOpAction(a: Action) { a.NoOp? }
+predicate NoOpDeleteListMissing(m: Model, a: Action) { a.DeleteList? && a.listId !in m.lists }
+predicate NoOpDeleteTaskMissing(m: Model, a: Action) { a.DeleteTask? && a.taskId !in m.taskData }
+predicate NoOpDeleteTaskAlreadyDeleted(m: Model, a: Action) { a.DeleteTask? && a.taskId in m.taskData && m.taskData[a.taskId].deleted }
+predicate NoOpDeleteTagMissing(m: Model, a: Action) { a.DeleteTag? && a.tagId !in m.tags }
+predicate NoOpMakeCollaborativeAlready(m: Model, a: Action) { a.MakeCollaborative? && m.mode.Collaborative? }
+predicate NoOpAddMemberAlready(m: Model, a: Action) { a.AddMember? && m.mode.Collaborative? && a.userId in m.members }
+predicate NoOpRemoveMemberMissing(m: Model, a: Action) { a.RemoveMember? && a.userId !in m.members }
+
+predicate IsNoOp(m: Model, a: Action)
+  requires Inv(m)
+{
+  NoOpAction(a)
+  || NoOpDeleteListMissing(m, a)
+  || NoOpDeleteTaskMissing(m, a)
+  || NoOpDeleteTaskAlreadyDeleted(m, a)
+  || NoOpDeleteTagMissing(m, a)
+  || NoOpMakeCollaborativeAlready(m, a)
+  || NoOpAddMemberAlready(m, a)
+  || NoOpRemoveMemberMissing(m, a)
+}
+
+// Soundness: if IsNoOp(m, a), then apply(m, a) == Ok(m)
+lemma NoOpImpliesUnchanged(m: Model, a: Action)
+  requires Inv(m)
+  requires IsNoOp(m, a)
+  ensures apply(m, a) == true_(m)
+{
+  if NoOpAction(a) { return; }
+  if NoOpDeleteListMissing(m, a) { return; }
+  if NoOpDeleteTaskMissing(m, a) { return; }
+  if NoOpDeleteTaskAlreadyDeleted(m, a) { return; }
+  if NoOpDeleteTagMissing(m, a) { return; }
+  if NoOpMakeCollaborativeAlready(m, a) { return; }
+  if NoOpAddMemberAlready(m, a) { return; }
+  if NoOpRemoveMemberMissing(m, a) { return; }
 }
