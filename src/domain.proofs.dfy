@@ -1290,10 +1290,115 @@ lemma RestoreTaskPreservesInv(m: Model, taskId: int, m2: Model)
   requires apply(m, RestoreTask(taskId)) == true_(m2)
   ensures Inv(m2)
 {
-  // NOTE: The generated code has a bug - it doesn't check that deletedFromList
-  // still exists in m.lists. If the list was deleted, restoring to it violates
-  // invariant B. This lemma is expected to not fully verify.
-  assume {:axiom} false;
+  assert apply(m, RestoreTask(taskId)) == applyRestoreTask(m, taskId);
+  var task := m.taskData[taskId];
+  assert task.deleted;
+  assert |m.lists| > 0;
+
+  // The fix ensures targetList is always in m.lists
+  var targetList := match task.deletedFromList {
+    case Some(v) => if v in m.lists then v else m.lists[0]
+    case None => m.lists[0]
+  };
+  assert targetList in m.lists;
+  assert targetList in m.tasks; // Inv B
+
+  var lane := m.tasks[targetList];
+  var updTask := task.(deleted := false, deletedBy := None, deletedFromList := None);
+
+  assert m2 == m.(tasks := m.tasks[targetList := lane + [taskId]],
+                  taskData := m.taskData[taskId := updTask]);
+
+  // Deleted task has count 0 (Inv D') — so not in any lane
+  assert CountInLists(m, taskId) == 0;
+  if taskId in lane {
+    CountContainsAtLeastOne(m.lists, m.tasks, taskId, targetList);
+    assert false;
+  }
+  assert taskId !in lane;
+
+  // E: extended lane still NoDupSeq
+  NoDupSeqAppend(lane, taskId);
+
+  // B: tasks domain unchanged (targetList was already a key)
+  assert forall l :: l in m2.tasks <==> l in m2.lists;
+  assert forall l :: l in m2.listNames <==> l in m2.lists;
+
+  // D/D': count for restored task goes 0→1; others unchanged
+  forall tid | tid in m2.taskData
+    ensures !m2.taskData[tid].deleted ==> CountInLists(m2, tid) == 1
+    ensures m2.taskData[tid].deleted ==> CountInLists(m2, tid) == 0
+  {
+    CountAfterUpdateOneLane(m.lists, m.tasks, targetList, lane + [taskId], tid);
+    if tid == taskId {
+      assert !m2.taskData[taskId].deleted;
+      assert !(taskId in m.tasks[targetList]);
+      assert taskId in (lane + [taskId]);
+    } else {
+      assert m2.taskData[tid] == m.taskData[tid];
+      assert (tid in (lane + [taskId])) <==> (tid in lane);
+    }
+  }
+
+  // C: task IDs in lanes exist in taskData
+  forall l, id | l in m2.tasks && id in m2.tasks[l]
+    ensures id in m2.taskData
+  {
+    if l == targetList {
+      if id != taskId { assert id in lane; }
+    } else {
+      assert m2.tasks[l] == m.tasks[l];
+    }
+  }
+
+  // E: NoDupSeq for all lanes
+  forall l | l in m2.tasks
+    ensures NoDupSeq(m2.tasks[l])
+  {
+    if l == targetList {
+      assert m2.tasks[l] == lane + [taskId];
+    } else {
+      assert m2.tasks[l] == m.tasks[l];
+    }
+  }
+
+  // N: title uniqueness within lists
+  assert !taskTitleExistsInList(m, targetList, task.title, None);
+  forall l, t1, t2 | l in m2.tasks
+      && t1 in m2.tasks[l] && t1 in m2.taskData && !m2.taskData[t1].deleted
+      && t2 in m2.tasks[l] && t2 in m2.taskData && !m2.taskData[t2].deleted
+      && t1 != t2
+    ensures !eqIgnoreCase(m2.taskData[t1].title, m2.taskData[t2].title)
+  {
+    if l != targetList {
+      // Lane unchanged; taskId not in any old lane (count 0)
+      assert m2.tasks[l] == m.tasks[l];
+      if t1 == taskId {
+        assert taskId in m.tasks[l];
+        CountContainsAtLeastOne(m.lists, m.tasks, taskId, l);
+        assert false;
+      }
+      if t2 == taskId {
+        assert taskId in m.tasks[l];
+        CountContainsAtLeastOne(m.lists, m.tasks, taskId, l);
+        assert false;
+      }
+      assert m2.taskData[t1] == m.taskData[t1];
+      assert m2.taskData[t2] == m.taskData[t2];
+    } else if t1 != taskId && t2 != taskId {
+      // Both old tasks in old lane — preserved from Inv(m)
+      assert t1 in lane && t2 in lane;
+      assert m2.taskData[t1] == m.taskData[t1];
+      assert m2.taskData[t2] == m.taskData[t2];
+    } else {
+      // One is the restored task, other is old
+      var other := if t1 == taskId then t2 else t1;
+      assert other in lane;
+      assert other != taskId;
+      assert other in m.taskData && !m.taskData[other].deleted;
+      TaskTitleExistsFromFalseHelper(m.tasks[targetList], m.taskData, task.title, None, 0, other);
+    }
+  }
 }
 
 // --- MoveTask ---
