@@ -101,6 +101,9 @@ export type {
   TaskId, ListId, TagId, UserId,
   DateVal, Task, Tag, ProjectMode, Model,
   Place, ListPlace, Err, Result, Action,
+  ProjectId, MultiModel, MultiAction,
+  NetworkStatus, EffectMode, MultiClientState, EffectState,
+  EffectEvent, EffectCommand, StepResult,
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -701,4 +704,363 @@ export function countLogbookTasks(m: Model): number {
     if (isLogbookTask(task)) count = count + 1
   }
   return count
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Multi-Project Types
+// ═══════════════════════════════════════════════════════════════
+
+type ProjectId = string
+
+interface MultiModel {
+  projects: Record<string, Model>
+}
+
+type MultiAction =
+  | { kind: 'SingleAction'; projectId: ProjectId; action: Action }
+
+type NetworkStatus = 'Online' | 'Offline'
+
+type EffectMode =
+  | { kind: 'Idle' }
+  | { kind: 'Dispatching'; retries: number }
+
+interface MultiClientState {
+  baseVersions: Record<string, number>
+  present: MultiModel
+  pending: MultiAction[]
+}
+
+interface EffectState {
+  network: NetworkStatus
+  mode: EffectMode
+  client: MultiClientState
+}
+
+type EffectEvent =
+  | { kind: 'UserAction'; action: MultiAction }
+  | { kind: 'DispatchAccepted'; newVersions: Record<string, number>; newModels: Record<string, Model> }
+  | { kind: 'DispatchConflict'; freshVersions: Record<string, number>; freshModels: Record<string, Model> }
+  | { kind: 'DispatchRejected'; freshVersions: Record<string, number>; freshModels: Record<string, Model> }
+  | { kind: 'RealtimeUpdate'; projectId: ProjectId; version: number; model: Model }
+  | { kind: 'NetworkError' }
+  | { kind: 'NetworkRestored' }
+  | { kind: 'ManualGoOffline' }
+  | { kind: 'ManualGoOnline' }
+  | { kind: 'Tick' }
+
+type EffectCommand =
+  | { kind: 'CmdNoOp' }
+  | { kind: 'SendDispatch'; touchedProjects: ProjectId[]; baseVersions: Record<string, number>; action: MultiAction }
+  | { kind: 'FetchFreshState'; projects: ProjectId[] }
+
+interface StepResult {
+  state: EffectState
+  command: EffectCommand
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Effect Machine — Constants
+// ═══════════════════════════════════════════════════════════════
+
+const MAX_RETRIES: number = 5
+
+// ═══════════════════════════════════════════════════════════════
+// Effect Machine — Multi-Project Helpers
+// ═══════════════════════════════════════════════════════════════
+
+export function touchedProjects(action: MultiAction): ProjectId[] {
+  if (action.kind === 'SingleAction') return [action.projectId]
+  return []
+}
+
+function allProjectsLoaded(mm: MultiModel, action: MultiAction): boolean {
+  if (action.kind === 'SingleAction') {
+    return action.projectId in mm.projects
+  }
+  return false
+}
+
+function tryApplyMulti(mm: MultiModel, action: MultiAction): MultiModel {
+  if (action.kind === 'SingleAction') {
+    const project = mm.projects[action.projectId]
+    if (project === undefined) return mm
+    const result = apply(project, action.action)
+    if (!result.ok) return mm
+    return { projects: { ...mm.projects, [action.projectId]: result.value } }
+  }
+  return mm
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Effect Machine — Pending Replay
+// ═══════════════════════════════════════════════════════════════
+
+function reapplyPending(mm: MultiModel, pending: MultiAction[]): MultiModel {
+  //@ decreases pending.length
+  if (pending.length === 0) return mm
+  const head = pending[0]
+  const rest = pending.slice(1)
+  if (!allProjectsLoaded(mm, head)) {
+    return reapplyPending(mm, rest)
+  }
+  const newMM = tryApplyMulti(mm, head)
+  return reapplyPending(newMM, rest)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Effect Machine — Map Merge (pure)
+// ═══════════════════════════════════════════════════════════════
+
+//@ pure
+function mergeVersions(base: Record<string, number>, updates: Record<string, number>): Record<string, number> {
+  const result = new Map<string, number>()
+  //@ havoc
+  for (const [pid, v] of base) {
+    result.set(pid, v)
+  }
+  //@ havoc
+  for (const [pid, v] of updates) {
+    result.set(pid, v)
+  }
+  //@ as Record
+  return result
+}
+
+//@ pure
+function mergeModels(base: Record<string, Model>, updates: Record<string, Model>): Record<string, Model> {
+  const result = new Map<string, Model>()
+  //@ havoc
+  for (const [pid, m] of base) {
+    result.set(pid, m)
+  }
+  //@ havoc
+  for (const [pid, m] of updates) {
+    result.set(pid, m)
+  }
+  //@ as Record
+  return result
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Effect Machine — State Accessors
+// ═══════════════════════════════════════════════════════════════
+
+export function hasPending(es: EffectState): boolean {
+  return es.client.pending.length > 0
+}
+
+export function isOnline(es: EffectState): boolean {
+  return es.network === 'Online'
+}
+
+export function isIdle(es: EffectState): boolean {
+  return es.mode.kind === 'Idle'
+}
+
+export function canStartDispatch(es: EffectState): boolean {
+  return isOnline(es) && isIdle(es) && hasPending(es)
+}
+
+function firstPendingAction(es: EffectState): MultiAction {
+  //@ requires es.client.pending.length > 0
+  return es.client.pending[0]
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Effect Machine — Base Versions for Dispatch
+// ═══════════════════════════════════════════════════════════════
+
+function baseVersionsFrom(touched: ProjectId[], baseVersions: Record<string, number>, i: number): Record<string, number> {
+  //@ requires i >= 0 && i <= touched.length
+  //@ decreases touched.length - i
+  if (i >= touched.length) return {}
+  const pid = touched[i]
+  const rest = baseVersionsFrom(touched, baseVersions, i + 1)
+  // Workaround for TODO: `{ ...rest, [pid]: baseVersions[pid] }` double-wraps
+  // the value in Option. Binding to a variable and using undefined-check avoids it.
+  const version = baseVersions[pid]
+  if (version === undefined) return rest
+  return { ...rest, [pid]: version }
+}
+
+function baseVersionsForAction(client: MultiClientState, action: MultiAction): Record<string, number> {
+  const touched = touchedProjects(action)
+  return baseVersionsFrom(touched, client.baseVersions, 0)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Effect Machine — Client State Transitions
+// ═══════════════════════════════════════════════════════════════
+
+function clientLocalDispatch(client: MultiClientState, action: MultiAction): MultiClientState {
+  const newPresent = allProjectsLoaded(client.present, action)
+    ? tryApplyMulti(client.present, action)
+    : client.present
+  return {
+    baseVersions: client.baseVersions,
+    present: newPresent,
+    pending: [...client.pending, action],
+  }
+}
+
+function mergeAndReapply(client: MultiClientState, newVersions: Record<string, number>,
+    newModels: Record<string, Model>, pending: MultiAction[]): MultiClientState {
+  const mergedV = mergeVersions(client.baseVersions, newVersions)
+  const mergedP = mergeModels(client.present.projects, newModels)
+  const reapplied = reapplyPending({ projects: mergedP }, pending)
+  return { baseVersions: mergedV, present: reapplied, pending }
+}
+
+function clientAcceptReply(client: MultiClientState, newVersions: Record<string, number>,
+    newModels: Record<string, Model>): MultiClientState {
+  const rest = client.pending.length > 0 ? client.pending.slice(1) : []
+  return mergeAndReapply(client, newVersions, newModels, rest)
+}
+
+function clientRejectReply(client: MultiClientState, freshVersions: Record<string, number>,
+    freshModels: Record<string, Model>): MultiClientState {
+  const rest = client.pending.length > 0 ? client.pending.slice(1) : []
+  return mergeAndReapply(client, freshVersions, freshModels, rest)
+}
+
+function handleConflict(client: MultiClientState, freshVersions: Record<string, number>,
+    freshModels: Record<string, Model>): MultiClientState {
+  return mergeAndReapply(client, freshVersions, freshModels, client.pending)
+}
+
+function handleRealtimeUpdate(client: MultiClientState, projectId: ProjectId,
+    version: number, model: Model): MultiClientState {
+  const newVersions: Record<string, number> = { ...client.baseVersions, [projectId]: version }
+  const newProjects: Record<string, Model> = { ...client.present.projects, [projectId]: model }
+  const reapplied = reapplyPending({ projects: newProjects }, client.pending)
+  return { baseVersions: newVersions, present: reapplied, pending: client.pending }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Effect Machine — Dispatch Starter
+// ═══════════════════════════════════════════════════════════════
+
+function cmdNoOp(): EffectCommand { return { kind: 'CmdNoOp' } }
+
+function startDispatch(es: EffectState): StepResult {
+  //@ requires es.client.pending.length > 0
+  const action = firstPendingAction(es)
+  const touched = touchedProjects(action)
+  const versions = baseVersionsForAction(es.client, action)
+  return {
+    state: { ...es, mode: { kind: 'Dispatching', retries: 0 } },
+    command: { kind: 'SendDispatch', touchedProjects: touched, baseVersions: versions, action },
+  }
+}
+
+function tryStartDispatch(es: EffectState): StepResult {
+  if (canStartDispatch(es)) return startDispatch(es)
+  return { state: es, command: cmdNoOp() }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Effect Machine — Per-Event Step Functions
+// ═══════════════════════════════════════════════════════════════
+
+function stepUserAction(es: EffectState, action: MultiAction): StepResult {
+  const newClient = clientLocalDispatch(es.client, action)
+  const newState: EffectState = { ...es, client: newClient }
+  return tryStartDispatch(newState)
+}
+
+function stepDispatchAccepted(es: EffectState, newVersions: Record<string, number>,
+    newModels: Record<string, Model>): StepResult {
+  if (es.mode.kind !== 'Dispatching') return { state: es, command: cmdNoOp() }
+  const newClient = clientAcceptReply(es.client, newVersions, newModels)
+  const newState: EffectState = { network: es.network, mode: { kind: 'Idle' }, client: newClient }
+  return tryStartDispatch(newState)
+}
+
+function stepDispatchConflict(es: EffectState, freshVersions: Record<string, number>,
+    freshModels: Record<string, Model>): StepResult {
+  if (es.mode.kind !== 'Dispatching') return { state: es, command: cmdNoOp() }
+  if (es.mode.retries >= MAX_RETRIES) {
+    return { state: { ...es, mode: { kind: 'Idle' } }, command: cmdNoOp() }
+  }
+  const newClient = handleConflict(es.client, freshVersions, freshModels)
+  const newState: EffectState = {
+    network: es.network,
+    mode: { kind: 'Dispatching', retries: es.mode.retries + 1 },
+    client: newClient,
+  }
+  if (!hasPending(newState)) {
+    return { state: { ...newState, mode: { kind: 'Idle' } }, command: cmdNoOp() }
+  }
+  const action = firstPendingAction(newState)
+  const touched = touchedProjects(action)
+  const versions = baseVersionsForAction(newState.client, action)
+  return {
+    state: newState,
+    command: { kind: 'SendDispatch', touchedProjects: touched, baseVersions: versions, action },
+  }
+}
+
+function stepDispatchRejected(es: EffectState, freshVersions: Record<string, number>,
+    freshModels: Record<string, Model>): StepResult {
+  if (es.mode.kind !== 'Dispatching') return { state: es, command: cmdNoOp() }
+  const newClient = clientRejectReply(es.client, freshVersions, freshModels)
+  const newState: EffectState = { network: es.network, mode: { kind: 'Idle' }, client: newClient }
+  return tryStartDispatch(newState)
+}
+
+function stepRealtimeUpdate(es: EffectState, projectId: ProjectId,
+    version: number, model: Model): StepResult {
+  if (es.mode.kind === 'Dispatching') return { state: es, command: cmdNoOp() }
+  const newClient = handleRealtimeUpdate(es.client, projectId, version, model)
+  return { state: { ...es, client: newClient }, command: cmdNoOp() }
+}
+
+function stepNetworkError(es: EffectState): StepResult {
+  return { state: { ...es, network: 'Offline', mode: { kind: 'Idle' } }, command: cmdNoOp() }
+}
+
+function stepNetworkRestored(es: EffectState): StepResult {
+  const newState: EffectState = { ...es, network: 'Online' }
+  return tryStartDispatch(newState)
+}
+
+function stepTick(es: EffectState): StepResult {
+  return tryStartDispatch(es)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Effect Machine — Main Step Function
+// ═══════════════════════════════════════════════════════════════
+
+//@ __mapFromArray
+export function step(es: EffectState, event: EffectEvent): StepResult {
+  switch (event.kind) {
+  case 'UserAction': return stepUserAction(es, event.action)
+  case 'DispatchAccepted': return stepDispatchAccepted(es, event.newVersions, event.newModels)
+  case 'DispatchConflict': return stepDispatchConflict(es, event.freshVersions, event.freshModels)
+  case 'DispatchRejected': return stepDispatchRejected(es, event.freshVersions, event.freshModels)
+  case 'RealtimeUpdate': return stepRealtimeUpdate(es, event.projectId, event.version, event.model)
+  case 'NetworkError': return stepNetworkError(es)
+  case 'NetworkRestored': return stepNetworkRestored(es)
+  case 'ManualGoOffline': return stepNetworkError(es)
+  case 'ManualGoOnline': return stepNetworkRestored(es)
+  case 'Tick': return stepTick(es)
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Effect Machine — Initialization
+// ═══════════════════════════════════════════════════════════════
+
+export function initEffect(versions: Record<string, number>, models: Record<string, Model>): EffectState {
+  return {
+    network: 'Online',
+    mode: { kind: 'Idle' },
+    client: {
+      baseVersions: versions,
+      present: { projects: models },
+      pending: [],
+    },
+  }
 }

@@ -83,6 +83,26 @@ datatype Result<T, E> = true_(value: T) | false_(error: E)
 
 datatype Action = NoOp | AddList(name: string) | RenameList(listId: int, newName: string) | DeleteList(listId: int) | MoveList(listId: int, listPlace: ListPlace) | AddTask(listId: int, title: string) | EditTask(taskId: int, title: string, notes: string) | DeleteTask(taskId: int, userId: string) | RestoreTask(taskId: int) | MoveTask(taskId: int, toList: int, taskPlace: Place) | CompleteTask(taskId: int) | UncompleteTask(taskId: int) | StarTask(taskId: int) | UnstarTask(taskId: int) | SetDueDate(taskId: int, dueDate: Option<DateVal>) | AssignTask(taskId: int, userId: string) | UnassignTask(taskId: int, userId: string) | AddTagToTask(taskId: int, tagId: int) | RemoveTagFromTask(taskId: int, tagId: int) | CreateTag(name: string) | RenameTag(tagId: int, newName: string) | DeleteTag(tagId: int) | MakeCollaborative | AddMember(userId: string) | RemoveMember(userId: string)
 
+type ProjectId = string
+
+datatype MultiModel = MultiModel(projects: map<string, Model>)
+
+datatype MultiAction = SingleAction(projectId: string, action: Action)
+
+datatype NetworkStatus = Online | Offline
+
+datatype EffectMode = Idle | Dispatching(retries: int)
+
+datatype MultiClientState = MultiClientState(baseVersions: map<string, int>, present: MultiModel, pending: seq<MultiAction>)
+
+datatype EffectState = EffectState(network: NetworkStatus, mode: EffectMode, client: MultiClientState)
+
+datatype EffectEvent = UserAction(action: MultiAction) | DispatchAccepted(newVersions: map<string, int>, newModels: map<string, Model>) | DispatchConflict(freshVersions: map<string, int>, freshModels: map<string, Model>) | DispatchRejected(freshVersions: map<string, int>, freshModels: map<string, Model>) | RealtimeUpdate(projectId: string, version: int, model: Model) | NetworkError | NetworkRestored | ManualGoOffline | ManualGoOnline | Tick
+
+datatype EffectCommand = CmdNoOp | SendDispatch(touchedProjects: seq<string>, baseVersions: map<string, int>, action: MultiAction) | FetchFreshState(projects: seq<string>)
+
+datatype StepResult = StepResult(state: EffectState, command: EffectCommand)
+
 function isLeapYear(year: int): bool
 {
   ((((year % 4) == 0) && ((year % 100) != 0)) || ((year % 400) == 0))
@@ -997,22 +1017,285 @@ function getTagName(m: Model, tagId: TagId): Option<string>
   }
 }
 
+function touchedProjects(action: MultiAction): seq<ProjectId>
+{
+  match action {
+    case SingleAction(i_action_projectId, i_action_action) =>
+      [i_action_projectId]
+  }
+}
+
+function allProjectsLoaded(mm: MultiModel, action: MultiAction): bool
+{
+  match action {
+    case SingleAction(i_action_projectId, i_action_action) =>
+      (i_action_projectId in mm.projects)
+  }
+}
+
+function tryApplyMulti(mm: MultiModel, action: MultiAction): MultiModel
+{
+  match action {
+    case SingleAction(i_action_projectId, i_action_action) =>
+      var project := (if i_action_projectId in mm.projects then Some(mm.projects[i_action_projectId]) else None);
+      match project {
+        case Some(i_project_val) =>
+          var result := apply(i_project_val, i_action_action);
+          if !(result.true_?) then
+            mm
+          else
+            MultiModel(mm.projects[i_action_projectId := result.value])
+        case None =>
+          mm
+      }
+  }
+}
+
+function reapplyPending(mm: MultiModel, pending: seq<MultiAction>): MultiModel
+  decreases |pending|
+{
+  if (|pending| == 0) then
+    mm
+  else
+    var head := pending[0];
+    var rest := pending[1..];
+    if !(allProjectsLoaded(mm, head)) then
+      reapplyPending(mm, rest)
+    else
+      var newMM := tryApplyMulti(mm, head);
+      reapplyPending(newMM, rest)
+}
+
+function hasPending(es: EffectState): bool
+{
+  (|es.client.pending| > 0)
+}
+
+function isOnline(es: EffectState): bool
+{
+  es.network.Online?
+}
+
+function isIdle(es: EffectState): bool
+{
+  es.mode.Idle?
+}
+
+function canStartDispatch(es: EffectState): bool
+{
+  ((isOnline(es) && isIdle(es)) && hasPending(es))
+}
+
+function firstPendingAction(es: EffectState): MultiAction
+  requires (|es.client.pending| > 0)
+{
+  es.client.pending[0]
+}
+
+function baseVersionsFrom(touched: seq<ProjectId>, baseVersions: map<string, int>, i: int): map<string, int>
+  requires (i >= 0)
+  requires (i <= |touched|)
+  decreases (|touched| - i)
+{
+  if (i >= |touched|) then
+    map[]
+  else
+    var pid := touched[i];
+    var rest := baseVersionsFrom(touched, baseVersions, (i + 1));
+    var version := (if pid in baseVersions then Some(baseVersions[pid]) else None);
+    match version {
+      case Some(i_version_val) =>
+        rest[pid := i_version_val]
+      case None =>
+        rest
+    }
+}
+
+function baseVersionsForAction(client: MultiClientState, action: MultiAction): map<string, int>
+{
+  var touched := touchedProjects(action);
+  baseVersionsFrom(touched, client.baseVersions, 0)
+}
+
+function clientLocalDispatch(client: MultiClientState, action: MultiAction): MultiClientState
+{
+  var newPresent := if allProjectsLoaded(client.present, action) then tryApplyMulti(client.present, action) else client.present;
+  MultiClientState(client.baseVersions, newPresent, (client.pending + [action]))
+}
+
+function mergeAndReapply(client: MultiClientState, newVersions: map<string, int>, newModels: map<string, Model>, pending: seq<MultiAction>): MultiClientState
+{
+  var mergedV := mergeVersions(client.baseVersions, newVersions);
+  var mergedP := mergeModels(client.present.projects, newModels);
+  var reapplied := reapplyPending(MultiModel(mergedP), pending);
+  MultiClientState(mergedV, reapplied, pending)
+}
+
+function clientAcceptReply(client: MultiClientState, newVersions: map<string, int>, newModels: map<string, Model>): MultiClientState
+{
+  var rest := if (|client.pending| > 0) then client.pending[1..] else [];
+  mergeAndReapply(client, newVersions, newModels, rest)
+}
+
+function clientRejectReply(client: MultiClientState, freshVersions: map<string, int>, freshModels: map<string, Model>): MultiClientState
+{
+  var rest := if (|client.pending| > 0) then client.pending[1..] else [];
+  mergeAndReapply(client, freshVersions, freshModels, rest)
+}
+
+function handleConflict(client: MultiClientState, freshVersions: map<string, int>, freshModels: map<string, Model>): MultiClientState
+{
+  mergeAndReapply(client, freshVersions, freshModels, client.pending)
+}
+
+function handleRealtimeUpdate(client: MultiClientState, projectId: ProjectId, version: int, model: Model): MultiClientState
+{
+  var newVersions := client.baseVersions[projectId := version];
+  var newProjects := client.present.projects[projectId := model];
+  var reapplied := reapplyPending(MultiModel(newProjects), client.pending);
+  MultiClientState(newVersions, reapplied, client.pending)
+}
+
+function cmdNoOp(): EffectCommand
+{
+  EffectCommand.CmdNoOp
+}
+
+function startDispatch(es: EffectState): StepResult
+  requires (|es.client.pending| > 0)
+{
+  var action := firstPendingAction(es);
+  var touched := touchedProjects(action);
+  var versions := baseVersionsForAction(es.client, action);
+  StepResult(es.(mode := Dispatching(0)), SendDispatch(touched, versions, action))
+}
+
+function tryStartDispatch(es: EffectState): StepResult
+{
+  if canStartDispatch(es) then
+    startDispatch(es)
+  else
+    StepResult(es, cmdNoOp())
+}
+
+function stepUserAction(es: EffectState, action: MultiAction): StepResult
+{
+  var newClient := clientLocalDispatch(es.client, action);
+  var newState := es.(client := newClient);
+  tryStartDispatch(newState)
+}
+
+function stepDispatchAccepted(es: EffectState, newVersions: map<string, int>, newModels: map<string, Model>): StepResult
+{
+  if (!es.mode.Dispatching?) then
+    StepResult(es, cmdNoOp())
+  else
+    var newClient := clientAcceptReply(es.client, newVersions, newModels);
+    var newState := EffectState(es.network, EffectMode.Idle, newClient);
+    tryStartDispatch(newState)
+}
+
+function stepDispatchConflict(es: EffectState, freshVersions: map<string, int>, freshModels: map<string, Model>): StepResult
+{
+  if (!es.mode.Dispatching?) then
+    StepResult(es, cmdNoOp())
+  else
+    if (es.mode.retries >= MAX_RETRIES) then
+      StepResult(es.(mode := EffectMode.Idle), cmdNoOp())
+    else
+      var newClient := handleConflict(es.client, freshVersions, freshModels);
+      var newState := EffectState(es.network, Dispatching((es.mode.retries + 1)), newClient);
+      if !(hasPending(newState)) then
+        StepResult(newState.(mode := EffectMode.Idle), cmdNoOp())
+      else
+        var action := firstPendingAction(newState);
+        var touched := touchedProjects(action);
+        var versions := baseVersionsForAction(newState.client, action);
+        StepResult(newState, SendDispatch(touched, versions, action))
+}
+
+function stepDispatchRejected(es: EffectState, freshVersions: map<string, int>, freshModels: map<string, Model>): StepResult
+{
+  if (!es.mode.Dispatching?) then
+    StepResult(es, cmdNoOp())
+  else
+    var newClient := clientRejectReply(es.client, freshVersions, freshModels);
+    var newState := EffectState(es.network, EffectMode.Idle, newClient);
+    tryStartDispatch(newState)
+}
+
+function stepRealtimeUpdate(es: EffectState, projectId: ProjectId, version: int, model: Model): StepResult
+{
+  if es.mode.Dispatching? then
+    StepResult(es, cmdNoOp())
+  else
+    var newClient := handleRealtimeUpdate(es.client, projectId, version, model);
+    StepResult(es.(client := newClient), cmdNoOp())
+}
+
+function stepNetworkError(es: EffectState): StepResult
+{
+  StepResult(es.(network := NetworkStatus.Offline, mode := EffectMode.Idle), cmdNoOp())
+}
+
+function stepNetworkRestored(es: EffectState): StepResult
+{
+  var newState := es.(network := NetworkStatus.Online);
+  tryStartDispatch(newState)
+}
+
+function stepTick(es: EffectState): StepResult
+{
+  tryStartDispatch(es)
+}
+
+function step(es: EffectState, event: EffectEvent): StepResult
+{
+  match event {
+    case UserAction(i_event_action) =>
+      stepUserAction(es, i_event_action)
+    case DispatchAccepted(i_event_newVersions, i_event_newModels) =>
+      stepDispatchAccepted(es, i_event_newVersions, i_event_newModels)
+    case DispatchConflict(i_event_freshVersions, i_event_freshModels) =>
+      stepDispatchConflict(es, i_event_freshVersions, i_event_freshModels)
+    case DispatchRejected(i_event_freshVersions, i_event_freshModels) =>
+      stepDispatchRejected(es, i_event_freshVersions, i_event_freshModels)
+    case RealtimeUpdate(i_event_projectId, i_event_version, i_event_model) =>
+      stepRealtimeUpdate(es, i_event_projectId, i_event_version, i_event_model)
+    case NetworkError =>
+      stepNetworkError(es)
+    case NetworkRestored =>
+      stepNetworkRestored(es)
+    case ManualGoOffline =>
+      stepNetworkError(es)
+    case ManualGoOnline =>
+      stepNetworkRestored(es)
+    case Tick =>
+      stepTick(es)
+  }
+}
+
+function initEffect(versions: map<string, int>, models: map<string, Model>): EffectState
+{
+  EffectState(NetworkStatus.Online, EffectMode.Idle, MultiClientState(versions, MultiModel(models), []))
+}
+
 const INITIAL_OWNER: string := "__initial__"
+
+const MAX_RETRIES: int := 5
 
 function tagNameExists(m: Model, name: string, excludeTag: Option<TagId>): bool
 {
-  exists tid :: tid in m.tags &&
-    (match excludeTag { case None => true case Some(v) => v != tid }) &&
-    eqIgnoreCase(m.tags[tid].name, name)
+  exists tid :: tid in m.tags && (match excludeTag { case None => true case Some(v) => v != tid }) && eqIgnoreCase(m.tags[tid].name, name)
 }
 by method {
   var i_tid_keys := SetToSeq(m.tags.Keys);
   var i_tid_idx := 0;
   while i_tid_idx < |i_tid_keys|
     invariant (i_tid_idx <= |i_tid_keys|)
-    invariant forall j :: 0 <= j < i_tid_idx ==>
-      !((match excludeTag { case None => true case Some(v) => v != i_tid_keys[j] }) &&
-        eqIgnoreCase(m.tags[i_tid_keys[j]].name, name))
+    invariant forall k :: 0 <= k < i_tid_idx ==>
+      var tid := i_tid_keys[k];
+      !(((match excludeTag { case None => true case Some(v) => v != tid }) && eqIgnoreCase(m.tags[tid].name, name)))
   {
     var tid := i_tid_keys[i_tid_idx];
     var tag := m.tags[tid];
@@ -1037,8 +1320,10 @@ by method {
   var i_tid_idx := 0;
   while i_tid_idx < |i_tid_keys|
     invariant (i_tid_idx <= |i_tid_keys|)
-    invariant forall tid :: tid in i_tid_keys[..i_tid_idx] ==> tid in result
-    invariant forall tid :: tid in result ==> tid in taskData && result[tid] == taskData[tid].(tags := without(taskData[tid].tags, tagId))
+    invariant forall k :: 0 <= k < i_tid_idx ==> i_tid_keys[k] in result
+    invariant forall k :: k in result ==> k in taskData && result[k] == taskData[k].(tags := without(taskData[k].tags, tagId))
+    invariant forall k :: 0 <= k < i_tid_idx ==> i_tid_keys[k] in result && result[i_tid_keys[k]] == taskData[i_tid_keys[k]].(tags := without(taskData[i_tid_keys[k]].tags, tagId))
+    invariant result.Keys == set k | 0 <= k < i_tid_idx :: i_tid_keys[k]
   {
     var tid := i_tid_keys[i_tid_idx];
     var task := taskData[tid];
@@ -1047,12 +1332,8 @@ by method {
     result := result[tid := task.(tags := newTags)];
     i_tid_idx := i_tid_idx + 1;
   }
-  assert forall tid :: tid in i_tid_keys <==> tid in taskData;
-  assert forall tid :: tid in taskData <==> tid in result by {
-    forall tid | tid in taskData ensures tid in result {
-      assert tid in i_tid_keys;
-    }
-  }
+  assert result.Keys == set k | 0 <= k < |i_tid_keys| :: i_tid_keys[k];
+  assert result.Keys == taskData.Keys;
   return result;
 }
 
@@ -1066,8 +1347,10 @@ by method {
   var i_tid_idx := 0;
   while i_tid_idx < |i_tid_keys|
     invariant (i_tid_idx <= |i_tid_keys|)
-    invariant forall tid :: tid in i_tid_keys[..i_tid_idx] ==> tid in result
-    invariant forall tid :: tid in result ==> tid in taskData && result[tid] == taskData[tid].(assignees := without(taskData[tid].assignees, userId))
+    invariant forall k :: 0 <= k < i_tid_idx ==> i_tid_keys[k] in result
+    invariant forall k :: k in result ==> k in taskData && result[k] == taskData[k].(assignees := without(taskData[k].assignees, userId))
+    invariant forall k :: 0 <= k < i_tid_idx ==> i_tid_keys[k] in result && result[i_tid_keys[k]] == taskData[i_tid_keys[k]].(assignees := without(taskData[i_tid_keys[k]].assignees, userId))
+    invariant result.Keys == set k | 0 <= k < i_tid_idx :: i_tid_keys[k]
   {
     var tid := i_tid_keys[i_tid_idx];
     var task := taskData[tid];
@@ -1076,12 +1359,8 @@ by method {
     result := result[tid := task.(assignees := newAssignees)];
     i_tid_idx := i_tid_idx + 1;
   }
-  assert forall tid :: tid in i_tid_keys <==> tid in taskData;
-  assert forall tid :: tid in taskData <==> tid in result by {
-    forall tid | tid in taskData ensures tid in result {
-      assert tid in i_tid_keys;
-    }
-  }
+  assert result.Keys == set k | 0 <= k < |i_tid_keys| :: i_tid_keys[k];
+  assert result.Keys == taskData.Keys;
   return result;
 }
 
@@ -1091,9 +1370,9 @@ function countPriorityTasks(m: Model): int
 }
 by method {
   var count := 0;
+  ghost var matched: set<int> := {};
   var i___keys := SetToSeq(m.taskData.Keys);
   var i___idx := 0;
-  ghost var matched: set<int> := {};
   while i___idx < |i___keys|
     invariant (i___idx <= |i___keys|)
     invariant matched == set tid | tid in i___keys[..i___idx] && isPriorityTask(m.taskData[tid]) :: tid
@@ -1103,8 +1382,8 @@ by method {
     var task := m.taskData[i_];
     var i_t3 := isPriorityTask(task);
     if i_t3 {
-      count := (count + 1);
       matched := matched + {i_};
+      count := (count + 1);
     }
     i___idx := i___idx + 1;
   }
@@ -1119,9 +1398,9 @@ function countLogbookTasks(m: Model): int
 }
 by method {
   var count := 0;
+  ghost var matched: set<int> := {};
   var i___keys := SetToSeq(m.taskData.Keys);
   var i___idx := 0;
-  ghost var matched: set<int> := {};
   while i___idx < |i___keys|
     invariant (i___idx <= |i___keys|)
     invariant matched == set tid | tid in i___keys[..i___idx] && isLogbookTask(m.taskData[tid]) :: tid
@@ -1131,12 +1410,90 @@ by method {
     var task := m.taskData[i_];
     var i_t4 := isLogbookTask(task);
     if i_t4 {
-      count := (count + 1);
       matched := matched + {i_};
+      count := (count + 1);
     }
     i___idx := i___idx + 1;
   }
   assert forall tid :: tid in i___keys <==> tid in m.taskData;
   assert matched == set tid | tid in m.taskData && isLogbookTask(m.taskData[tid]) :: tid;
   return count;
+}
+
+function mergeVersions(base: map<string, int>, updates: map<string, int>): map<string, int>
+{
+  map pid | pid in base.Keys + updates.Keys :: if pid in updates then updates[pid] else base[pid]
+}
+by method {
+  var result: map<string, int> := map[];
+  var i_pid_keys := SetToSeq(base.Keys);
+  var i_pid_idx := 0;
+  while i_pid_idx < |i_pid_keys|
+    invariant (i_pid_idx <= |i_pid_keys|)
+    invariant result.Keys == set k | 0 <= k < i_pid_idx :: i_pid_keys[k]
+    invariant forall k :: k in result ==> k in base && result[k] == base[k]
+  {
+    var pid := i_pid_keys[i_pid_idx];
+    var v := base[pid];
+    result := result[pid := v];
+    i_pid_idx := i_pid_idx + 1;
+  }
+  assert result == map k | k in base :: base[k];
+  var i_pid_keys2 := SetToSeq(updates.Keys);
+  var i_pid_idx2 := 0;
+  ghost var processed: set<string> := {};
+  while i_pid_idx2 < |i_pid_keys2|
+    invariant (i_pid_idx2 <= |i_pid_keys2|)
+    invariant processed == set k | k in i_pid_keys2[..i_pid_idx2]
+    invariant forall k :: k in result <==> k in base || k in processed
+    invariant forall k :: k in result && k in processed ==> result[k] == updates[k]
+    invariant forall k :: k in result && k !in processed ==> k in base && result[k] == base[k]
+  {
+    var pid := i_pid_keys2[i_pid_idx2];
+    var v := updates[pid];
+    result := result[pid := v];
+    processed := processed + {pid};
+    i_pid_idx2 := i_pid_idx2 + 1;
+  }
+  assert processed == updates.Keys;
+  return result;
+}
+
+function mergeModels(base: map<string, Model>, updates: map<string, Model>): map<string, Model>
+{
+  map pid | pid in base.Keys + updates.Keys :: if pid in updates then updates[pid] else base[pid]
+}
+by method {
+  var result: map<string, Model> := map[];
+  var i_pid_keys := SetToSeq(base.Keys);
+  var i_pid_idx := 0;
+  while i_pid_idx < |i_pid_keys|
+    invariant (i_pid_idx <= |i_pid_keys|)
+    invariant result.Keys == set k | 0 <= k < i_pid_idx :: i_pid_keys[k]
+    invariant forall k :: k in result ==> k in base && result[k] == base[k]
+  {
+    var pid := i_pid_keys[i_pid_idx];
+    var m := base[pid];
+    result := result[pid := m];
+    i_pid_idx := i_pid_idx + 1;
+  }
+  assert result == map k | k in base :: base[k];
+  var i_pid_keys2 := SetToSeq(updates.Keys);
+  var i_pid_idx2 := 0;
+  ghost var processed: set<string> := {};
+  while i_pid_idx2 < |i_pid_keys2|
+    invariant (i_pid_idx2 <= |i_pid_keys2|)
+    invariant processed == set k | k in i_pid_keys2[..i_pid_idx2]
+    invariant forall k :: k in result <==> k in base || k in processed
+    invariant forall k :: k in result && k in processed ==> result[k] == updates[k]
+    invariant forall k :: k in result && k !in processed ==> k in base && result[k] == base[k]
+  {
+    var pid := i_pid_keys2[i_pid_idx2];
+    var m := updates[pid];
+    result := result[pid := m];
+    processed := processed + {pid};
+    i_pid_idx2 := i_pid_idx2 + 1;
+  }
+  assert processed == updates.Keys;
+  return result;
 }
