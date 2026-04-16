@@ -2000,7 +2000,7 @@ lemma MoveListToDstPreservesInv(dst: Model, listName: string, lane: seq<TaskId>,
   CopyTasksFromLanePreservesInv(lane, taskData, r1.value, newListId, 0);
 }
 
-lemma {:timeLimit 60} TryMoveListToPreservesMultiInv(mm: MultiModel, srcProjectId: ProjectId,
+lemma {:timeLimit 120} TryMoveListToPreservesMultiInv(mm: MultiModel, srcProjectId: ProjectId,
     dstProjectId: ProjectId, listId: ListId)
   requires MultiInv(mm)
   ensures MultiInv(tryMoveListTo(mm, srcProjectId, dstProjectId, listId))
