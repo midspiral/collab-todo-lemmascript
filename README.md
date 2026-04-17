@@ -92,7 +92,7 @@ npx tsx ../LemmaScript/tools/src/lsc.ts regen --backend=dafny  src/domain.ts
 ### Verify proof lemmas
 
 ```bash
-./check-extra.sh
+./check-extra-slow.sh
 ```
 
 Verifies `src/domain.proofs.dfy` — the proofs establishing the 16-conjunct invariant and its preservation across all actions (single-project, cross-project, and NoOp completeness/soundness).
