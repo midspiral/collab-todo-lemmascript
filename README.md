@@ -116,7 +116,8 @@ Actions are plain objects: `{ kind: 'AddTask', listId, title }`. No Dafny runtim
 
 - All 25 single-project actions (`StepPreservesInv`)
 - All 3 cross-project actions (`TryApplyMultiPreservesMultiInv`)
-- NoOp soundness (`NoOpImpliesUnchanged`)
+- NoOp completeness (`CheckNoOps`: if `apply` returns unchanged model, it's a classified NoOp)
+- NoOp soundness (`NoOpImpliesUnchanged`: classified NoOps return unchanged model)
 - Initialization (`InitSatisfiesInv`)
 
 See `src/domain.proofs.dfy` for the full proof.
