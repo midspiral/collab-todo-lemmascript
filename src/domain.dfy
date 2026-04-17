@@ -246,16 +246,11 @@ function listNameExistsFrom(lists: seq<ListId>, listNames: map<int, string>, nam
   else
     var lid := lists[i];
     if ((match excludeList { case Some(i_) => false case None => true }) || (match excludeList { case Some(i_value) => (i_value != lid) case None => true })) then
-      var existing := (if lid in listNames then Some(listNames[lid]) else None);
-      match existing {
-        case Some(i_existing_val) =>
-          if eqIgnoreCase(i_existing_val, name) then
-            true
-          else
-            listNameExistsFrom(lists, listNames, name, excludeList, (i + 1))
-        case None =>
-          listNameExistsFrom(lists, listNames, name, excludeList, (i + 1))
-      }
+      if (lid in listNames) then
+        var i_existing_val := listNames[lid];
+        (eqIgnoreCase(i_existing_val, name) || listNameExistsFrom(lists, listNames, name, excludeList, (i + 1)))
+      else
+        listNameExistsFrom(lists, listNames, name, excludeList, (i + 1))
     else
       listNameExistsFrom(lists, listNames, name, excludeList, (i + 1))
 }
@@ -275,29 +270,18 @@ function taskTitleExistsFrom(lane: seq<TaskId>, taskData: map<int, Task>, title:
   else
     var tid := lane[i];
     if ((match excludeTask { case Some(i_) => false case None => true }) || (match excludeTask { case Some(i_value) => (i_value != tid) case None => true })) then
-      var task := (if tid in taskData then Some(taskData[tid]) else None);
-      match task {
-        case Some(i_task_val) =>
-          if (!(i_task_val.deleted) && eqIgnoreCase(i_task_val.title, title)) then
-            true
-          else
-            taskTitleExistsFrom(lane, taskData, title, excludeTask, (i + 1))
-        case None =>
-          taskTitleExistsFrom(lane, taskData, title, excludeTask, (i + 1))
-      }
+      if (tid in taskData) then
+        var i_task_val := taskData[tid];
+        ((!(i_task_val.deleted) && eqIgnoreCase(i_task_val.title, title)) || taskTitleExistsFrom(lane, taskData, title, excludeTask, (i + 1)))
+      else
+        taskTitleExistsFrom(lane, taskData, title, excludeTask, (i + 1))
     else
       taskTitleExistsFrom(lane, taskData, title, excludeTask, (i + 1))
 }
 
 function taskTitleExistsInList(m: Model, listId: ListId, title: string, excludeTask: Option<TaskId>): bool
 {
-  var lane := (if listId in m.tasks then Some(m.tasks[listId]) else None);
-  match lane {
-    case Some(i_lane_val) =>
-      taskTitleExistsFrom(i_lane_val, m.taskData, title, excludeTask, 0)
-    case None =>
-      false
-  }
+  ((listId in m.tasks) && var i_lane_val := m.tasks[listId]; taskTitleExistsFrom(i_lane_val, m.taskData, title, excludeTask, 0))
 }
 
 function findListForTaskFrom(lists: seq<ListId>, tasks: map<int, seq<TaskId>>, taskId: TaskId, i: int): Option<ListId>
@@ -309,16 +293,14 @@ function findListForTaskFrom(lists: seq<ListId>, tasks: map<int, seq<TaskId>>, t
     None
   else
     var lid := lists[i];
-    var lane := (if lid in tasks then Some(tasks[lid]) else None);
-    match lane {
-      case Some(i_lane_val) =>
-        if (taskId in i_lane_val) then
-          Some(lid)
-        else
-          findListForTaskFrom(lists, tasks, taskId, (i + 1))
-      case None =>
+    if (lid in tasks) then
+      var i_lane_val := tasks[lid];
+      if (taskId in i_lane_val) then
+        Some(lid)
+      else
         findListForTaskFrom(lists, tasks, taskId, (i + 1))
-    }
+    else
+      findListForTaskFrom(lists, tasks, taskId, (i + 1))
 }
 
 function findListForTask(m: Model, taskId: TaskId): Option<ListId>
@@ -335,13 +317,11 @@ function removeTaskFromListsFrom(lists: seq<ListId>, tasks: map<int, seq<TaskId>
     tasks
   else
     var lid := lists[i];
-    var lane := (if lid in tasks then Some(tasks[lid]) else None);
-    match lane {
-      case Some(i_lane_val) =>
-        removeTaskFromListsFrom(lists, tasks[lid := without(i_lane_val, taskId)], taskId, (i + 1))
-      case None =>
-        removeTaskFromListsFrom(lists, tasks, taskId, (i + 1))
-    }
+    if (lid in tasks) then
+      var i_lane_val := tasks[lid];
+      removeTaskFromListsFrom(lists, tasks[lid := without(i_lane_val, taskId)], taskId, (i + 1))
+    else
+      removeTaskFromListsFrom(lists, tasks, taskId, (i + 1))
 }
 
 function removeTaskFromAllLists(lists: seq<ListId>, tasks: map<int, seq<TaskId>>, taskId: TaskId): map<int, seq<TaskId>>
@@ -411,7 +391,7 @@ function applyDeleteList(m: Model, listId: ListId): Result<Model, Err>
   if !((listId in m.lists)) then
     ok(m)
   else
-    var lane := (match (if listId in m.tasks then Some(m.tasks[listId]) else None) { case Some(i_value) => i_value case None => [] });
+    var lane := if (listId in m.tasks) then var i_value := m.tasks[listId]; i_value else [];
     var newTaskData := removeKeysFromRecord(m.taskData, lane, 0);
     var newLists := without(m.lists, listId);
     var newListNames := (map k | k in m.listNames && k != listId :: m.listNames[k]);
@@ -443,243 +423,217 @@ function applyAddTask(m: Model, listId: ListId, title: string): Result<Model, Er
     else
       var id := m.nextTaskId;
       var task := Task(title, "", false, false, None, [], [], false, None, None);
-      var lane := (match (if listId in m.tasks then Some(m.tasks[listId]) else None) { case Some(i_value) => i_value case None => [] });
+      var lane := if (listId in m.tasks) then var i_value := m.tasks[listId]; i_value else [];
       ok(m.(tasks := m.tasks[listId := (lane + [id])], taskData := m.taskData[id := task], nextTaskId := (m.nextTaskId + 1)))
 }
 
 function applyEditTask(m: Model, taskId: TaskId, title: string, notes: string): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if i_task_val.deleted then
-        err(Err.TaskDeleted)
-      else
-        var listId := findListForTask(m, taskId);
-        match listId {
-          case Some(i_listId_val) =>
-            if taskTitleExistsInList(m, i_listId_val, title, Some(taskId)) then
-              err(Err.DuplicateTask)
-            else
-              ok(m.(taskData := m.taskData[taskId := i_task_val.(title := title, notes := notes)]))
-          case None =>
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if i_task_val.deleted then
+      err(Err.TaskDeleted)
+    else
+      var listId := findListForTask(m, taskId);
+      match listId {
+        case Some(i_listId_val) =>
+          if taskTitleExistsInList(m, i_listId_val, title, Some(taskId)) then
+            err(Err.DuplicateTask)
+          else
             ok(m.(taskData := m.taskData[taskId := i_task_val.(title := title, notes := notes)]))
-        }
-    case None =>
-      err(Err.MissingTask)
-  }
+        case None =>
+          ok(m.(taskData := m.taskData[taskId := i_task_val.(title := title, notes := notes)]))
+      }
+  else
+    err(Err.MissingTask)
 }
 
 function applyDeleteTask(m: Model, taskId: TaskId, userId: UserId): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if i_task_val.deleted then
-        ok(m)
-      else
-        var listId := findListForTask(m, taskId);
-        var newTasks := removeTaskFromAllLists(m.lists, m.tasks, taskId);
-        ok(m.(tasks := newTasks, taskData := m.taskData[taskId := i_task_val.(deleted := true, deletedBy := Some(userId), deletedFromList := listId)]))
-    case None =>
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if i_task_val.deleted then
       ok(m)
-  }
+    else
+      var listId := findListForTask(m, taskId);
+      var newTasks := removeTaskFromAllLists(m.lists, m.tasks, taskId);
+      ok(m.(tasks := newTasks, taskData := m.taskData[taskId := i_task_val.(deleted := true, deletedBy := Some(userId), deletedFromList := listId)]))
+  else
+    ok(m)
 }
 
 function applyRestoreTask(m: Model, taskId: TaskId): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if !(i_task_val.deleted) then
-        err(Err.MissingTask)
-      else
-        if (|m.lists| == 0) then
-          err(Err.MissingList)
-        else
-          var targetList := (match i_task_val.deletedFromList { case Some(i_task_deletedFromList_val) => if (i_task_deletedFromList_val in m.lists) then i_task_deletedFromList_val else m.lists[0] case None => m.lists[0] });
-          if taskTitleExistsInList(m, targetList, i_task_val.title, None) then
-            err(Err.DuplicateTask)
-          else
-            var lane := (match (if targetList in m.tasks then Some(m.tasks[targetList]) else None) { case Some(i_value) => i_value case None => [] });
-            ok(m.(tasks := m.tasks[targetList := (lane + [taskId])], taskData := m.taskData[taskId := i_task_val.(deleted := false, deletedBy := None, deletedFromList := None)]))
-    case None =>
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if !(i_task_val.deleted) then
       err(Err.MissingTask)
-  }
+    else
+      if (|m.lists| == 0) then
+        err(Err.MissingList)
+      else
+        var targetList := (match i_task_val.deletedFromList { case Some(i_task_deletedFromList_val) => if (i_task_deletedFromList_val in m.lists) then i_task_deletedFromList_val else m.lists[0] case None => m.lists[0] });
+        if taskTitleExistsInList(m, targetList, i_task_val.title, None) then
+          err(Err.DuplicateTask)
+        else
+          var lane := if (targetList in m.tasks) then var i_value := m.tasks[targetList]; i_value else [];
+          ok(m.(tasks := m.tasks[targetList := (lane + [taskId])], taskData := m.taskData[taskId := i_task_val.(deleted := false, deletedBy := None, deletedFromList := None)]))
+  else
+    err(Err.MissingTask)
 }
 
 function applyMoveTask(m: Model, taskId: TaskId, toList: ListId, taskPlace: Place): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if i_task_val.deleted then
-        err(Err.TaskDeleted)
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if i_task_val.deleted then
+      err(Err.TaskDeleted)
+    else
+      if !((toList in m.lists)) then
+        err(Err.MissingList)
       else
-        if !((toList in m.lists)) then
-          err(Err.MissingList)
+        if taskTitleExistsInList(m, toList, i_task_val.title, Some(taskId)) then
+          err(Err.DuplicateTask)
         else
-          if taskTitleExistsInList(m, toList, i_task_val.title, Some(taskId)) then
-            err(Err.DuplicateTask)
+          var cleaned := removeTaskFromAllLists(m.lists, m.tasks, taskId);
+          var targetLane := if (toList in cleaned) then var i_value := cleaned[toList]; i_value else [];
+          var pos := posFromPlace(targetLane, taskPlace);
+          if (pos < 0) then
+            err(Err.BadAnchor)
           else
-            var cleaned := removeTaskFromAllLists(m.lists, m.tasks, taskId);
-            var targetLane := (match (if toList in cleaned then Some(cleaned[toList]) else None) { case Some(i_value) => i_value case None => [] });
-            var pos := posFromPlace(targetLane, taskPlace);
-            if (pos < 0) then
-              err(Err.BadAnchor)
-            else
-              var clamped := MathMin(pos, |targetLane|);
-              var newLane := insertAt(targetLane, clamped, taskId);
-              ok(m.(tasks := cleaned[toList := newLane]))
-    case None =>
-      err(Err.MissingTask)
-  }
+            var clamped := MathMin(pos, |targetLane|);
+            var newLane := insertAt(targetLane, clamped, taskId);
+            ok(m.(tasks := cleaned[toList := newLane]))
+  else
+    err(Err.MissingTask)
 }
 
 function applyCompleteTask(m: Model, taskId: TaskId): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if i_task_val.deleted then
-        err(Err.TaskDeleted)
-      else
-        ok(m.(taskData := m.taskData[taskId := i_task_val.(completed := true)]))
-    case None =>
-      err(Err.MissingTask)
-  }
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if i_task_val.deleted then
+      err(Err.TaskDeleted)
+    else
+      ok(m.(taskData := m.taskData[taskId := i_task_val.(completed := true)]))
+  else
+    err(Err.MissingTask)
 }
 
 function applyUncompleteTask(m: Model, taskId: TaskId): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if i_task_val.deleted then
-        err(Err.TaskDeleted)
-      else
-        ok(m.(taskData := m.taskData[taskId := i_task_val.(completed := false)]))
-    case None =>
-      err(Err.MissingTask)
-  }
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if i_task_val.deleted then
+      err(Err.TaskDeleted)
+    else
+      ok(m.(taskData := m.taskData[taskId := i_task_val.(completed := false)]))
+  else
+    err(Err.MissingTask)
 }
 
 function applyStarTask(m: Model, taskId: TaskId): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if i_task_val.deleted then
-        err(Err.TaskDeleted)
-      else
-        ok(m.(taskData := m.taskData[taskId := i_task_val.(starred := true)]))
-    case None =>
-      err(Err.MissingTask)
-  }
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if i_task_val.deleted then
+      err(Err.TaskDeleted)
+    else
+      ok(m.(taskData := m.taskData[taskId := i_task_val.(starred := true)]))
+  else
+    err(Err.MissingTask)
 }
 
 function applyUnstarTask(m: Model, taskId: TaskId): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if i_task_val.deleted then
-        err(Err.TaskDeleted)
-      else
-        ok(m.(taskData := m.taskData[taskId := i_task_val.(starred := false)]))
-    case None =>
-      err(Err.MissingTask)
-  }
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if i_task_val.deleted then
+      err(Err.TaskDeleted)
+    else
+      ok(m.(taskData := m.taskData[taskId := i_task_val.(starred := false)]))
+  else
+    err(Err.MissingTask)
 }
 
 function applySetDueDate(m: Model, taskId: TaskId, dueDate: Option<DateVal>): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if i_task_val.deleted then
-        err(Err.TaskDeleted)
-      else
-        match dueDate {
-          case Some(i_dueDate_val) =>
-            if !(validDate(i_dueDate_val)) then
-              err(Err.InvalidDate)
-            else
-              ok(m.(taskData := m.taskData[taskId := i_task_val.(dueDate := Some(i_dueDate_val))]))
-          case None =>
-            ok(m.(taskData := m.taskData[taskId := i_task_val.(dueDate := dueDate)]))
-        }
-    case None =>
-      err(Err.MissingTask)
-  }
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if i_task_val.deleted then
+      err(Err.TaskDeleted)
+    else
+      match dueDate {
+        case Some(i_dueDate_val) =>
+          if !(validDate(i_dueDate_val)) then
+            err(Err.InvalidDate)
+          else
+            ok(m.(taskData := m.taskData[taskId := i_task_val.(dueDate := Some(i_dueDate_val))]))
+        case None =>
+          ok(m.(taskData := m.taskData[taskId := i_task_val.(dueDate := dueDate)]))
+      }
+  else
+    err(Err.MissingTask)
 }
 
 function applyAssignTask(m: Model, taskId: TaskId, userId: UserId): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if i_task_val.deleted then
-        err(Err.TaskDeleted)
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if i_task_val.deleted then
+      err(Err.TaskDeleted)
+    else
+      if !((userId in m.members)) then
+        err(Err.NotAMember)
       else
-        if !((userId in m.members)) then
-          err(Err.NotAMember)
+        if (userId in i_task_val.assignees) then
+          ok(m)
         else
-          if (userId in i_task_val.assignees) then
-            ok(m)
-          else
-            ok(m.(taskData := m.taskData[taskId := i_task_val.(assignees := (i_task_val.assignees + [userId]))]))
-    case None =>
-      err(Err.MissingTask)
-  }
+          ok(m.(taskData := m.taskData[taskId := i_task_val.(assignees := (i_task_val.assignees + [userId]))]))
+  else
+    err(Err.MissingTask)
 }
 
 function applyUnassignTask(m: Model, taskId: TaskId, userId: UserId): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if i_task_val.deleted then
-        err(Err.TaskDeleted)
-      else
-        ok(m.(taskData := m.taskData[taskId := i_task_val.(assignees := without(i_task_val.assignees, userId))]))
-    case None =>
-      err(Err.MissingTask)
-  }
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if i_task_val.deleted then
+      err(Err.TaskDeleted)
+    else
+      ok(m.(taskData := m.taskData[taskId := i_task_val.(assignees := without(i_task_val.assignees, userId))]))
+  else
+    err(Err.MissingTask)
 }
 
 function applyAddTagToTask(m: Model, taskId: TaskId, tagId: TagId): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if i_task_val.deleted then
-        err(Err.TaskDeleted)
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if i_task_val.deleted then
+      err(Err.TaskDeleted)
+    else
+      if !((tagId in m.tags)) then
+        err(Err.MissingTag)
       else
-        if !((tagId in m.tags)) then
-          err(Err.MissingTag)
+        if (tagId in i_task_val.tags) then
+          ok(m)
         else
-          if (tagId in i_task_val.tags) then
-            ok(m)
-          else
-            ok(m.(taskData := m.taskData[taskId := i_task_val.(tags := (i_task_val.tags + [tagId]))]))
-    case None =>
-      err(Err.MissingTask)
-  }
+          ok(m.(taskData := m.taskData[taskId := i_task_val.(tags := (i_task_val.tags + [tagId]))]))
+  else
+    err(Err.MissingTask)
 }
 
 function applyRemoveTagFromTask(m: Model, taskId: TaskId, tagId: TagId): Result<Model, Err>
 {
-  var task := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match task {
-    case Some(i_task_val) =>
-      if i_task_val.deleted then
-        err(Err.TaskDeleted)
-      else
-        ok(m.(taskData := m.taskData[taskId := i_task_val.(tags := without(i_task_val.tags, tagId))]))
-    case None =>
-      err(Err.MissingTask)
-  }
+  if (taskId in m.taskData) then
+    var i_task_val := m.taskData[taskId];
+    if i_task_val.deleted then
+      err(Err.TaskDeleted)
+    else
+      ok(m.(taskData := m.taskData[taskId := i_task_val.(tags := without(i_task_val.tags, tagId))]))
+  else
+    err(Err.MissingTask)
 }
 
 function applyCreateTag(m: Model, name: string): Result<Model, Err>
@@ -951,16 +905,14 @@ function isVisibleTask(t: Task): bool
 
 function getTask(m: Model, taskId: TaskId): Option<Task>
 {
-  var t := (if taskId in m.taskData then Some(m.taskData[taskId]) else None);
-  match t {
-    case Some(i_t_val) =>
-      if i_t_val.deleted then
-        None
-      else
-        Some(i_t_val)
-    case None =>
+  if (taskId in m.taskData) then
+    var i_t_val := m.taskData[taskId];
+    if i_t_val.deleted then
       None
-  }
+    else
+      Some(i_t_val)
+  else
+    None
 }
 
 function getTaskIncludingDeleted(m: Model, taskId: TaskId): Option<Task>
@@ -976,27 +928,23 @@ function getTasksInListFrom(lane: seq<TaskId>, taskData: map<int, Task>, i: int)
   if (i >= |lane|) then
     []
   else
-    var task := (if lane[i] in taskData then Some(taskData[lane[i]]) else None);
-    match task {
-      case Some(i_task_val) =>
-        if !(i_task_val.deleted) then
-          ([lane[i]] + getTasksInListFrom(lane, taskData, (i + 1)))
-        else
-          getTasksInListFrom(lane, taskData, (i + 1))
-      case None =>
+    if (lane[i] in taskData) then
+      var i_task_val := taskData[lane[i]];
+      if !(i_task_val.deleted) then
+        ([lane[i]] + getTasksInListFrom(lane, taskData, (i + 1)))
+      else
         getTasksInListFrom(lane, taskData, (i + 1))
-    }
+    else
+      getTasksInListFrom(lane, taskData, (i + 1))
 }
 
 function getTasksInList(m: Model, listId: ListId): seq<TaskId>
 {
-  var lane := (if listId in m.tasks then Some(m.tasks[listId]) else None);
-  match lane {
-    case Some(i_lane_val) =>
-      getTasksInListFrom(i_lane_val, m.taskData, 0)
-    case None =>
-      []
-  }
+  if (listId in m.tasks) then
+    var i_lane_val := m.tasks[listId];
+    getTasksInListFrom(i_lane_val, m.taskData, 0)
+  else
+    []
 }
 
 lemma getTasksInList_ensures(m: Model, listId: ListId)
@@ -1016,13 +964,11 @@ function getLists(m: Model): seq<ListId>
 
 function getTagName(m: Model, tagId: TagId): Option<string>
 {
-  var tag := (if tagId in m.tags then Some(m.tags[tagId]) else None);
-  match tag {
-    case Some(i_tag_val) =>
-      Some(i_tag_val.name)
-    case None =>
-      None
-  }
+  if (tagId in m.tags) then
+    var i_tag_val := m.tags[tagId];
+    Some(i_tag_val.name)
+  else
+    None
 }
 
 function touchedProjects(action: MultiAction): seq<ProjectId>
@@ -1045,69 +991,54 @@ function allProjectsLoaded(mm: MultiModel, action: MultiAction): bool
     case SingleAction(i_action_projectId, i_action_action) =>
       (i_action_projectId in mm.projects)
     case _ =>
-      if ((action.MoveTaskTo? || action.CopyTaskTo?) || action.MoveListTo?) then
-        ((action.srcProject in mm.projects) && (action.dstProject in mm.projects))
-      else
-        false
+      (((action.MoveTaskTo? || action.CopyTaskTo?) || action.MoveListTo?) && ((action.srcProject in mm.projects) && (action.dstProject in mm.projects)))
   }
 }
 
 function tryMoveTaskTo(mm: MultiModel, srcProjectId: ProjectId, dstProjectId: ProjectId, taskId: TaskId, dstList: ListId, taskPlace: Place): MultiModel
 {
-  var src := (if srcProjectId in mm.projects then Some(mm.projects[srcProjectId]) else None);
-  match src {
-    case Some(i_src_val) =>
-      var dst := (if dstProjectId in mm.projects then Some(mm.projects[dstProjectId]) else None);
-      match dst {
-        case Some(i_dst_val) =>
-          var task := (if taskId in i_src_val.taskData then Some(i_src_val.taskData[taskId]) else None);
-          match task {
-            case Some(i_task_val) =>
-              if i_task_val.deleted then
-                mm
-              else
-                var r1 := apply(i_src_val, DeleteTask(taskId, i_src_val.owner));
-                if !(r1.true_?) then
-                  mm
-                else
-                  var dstModel := copyTaskToModel(i_task_val, i_dst_val, dstList);
-                  MultiModel(mm.projects[srcProjectId := r1.value][dstProjectId := dstModel])
-            case None =>
-              mm
-          }
-        case None =>
+  if (srcProjectId in mm.projects) then
+    var i_src_val := mm.projects[srcProjectId];
+    if (dstProjectId in mm.projects) then
+      var i_dst_val := mm.projects[dstProjectId];
+      if (taskId in i_src_val.taskData) then
+        var i_task_val := i_src_val.taskData[taskId];
+        if i_task_val.deleted then
           mm
-      }
-    case None =>
+        else
+          var r1 := apply(i_src_val, DeleteTask(taskId, i_src_val.owner));
+          if !(r1.true_?) then
+            mm
+          else
+            var dstModel := copyTaskToModel(i_task_val, i_dst_val, dstList);
+            MultiModel(mm.projects[srcProjectId := r1.value][dstProjectId := dstModel])
+      else
+        mm
+    else
       mm
-  }
+  else
+    mm
 }
 
 function tryCopyTaskTo(mm: MultiModel, srcProjectId: ProjectId, dstProjectId: ProjectId, taskId: TaskId, dstList: ListId): MultiModel
 {
-  var src := (if srcProjectId in mm.projects then Some(mm.projects[srcProjectId]) else None);
-  match src {
-    case Some(i_src_val) =>
-      var dst := (if dstProjectId in mm.projects then Some(mm.projects[dstProjectId]) else None);
-      match dst {
-        case Some(i_dst_val) =>
-          var task := (if taskId in i_src_val.taskData then Some(i_src_val.taskData[taskId]) else None);
-          match task {
-            case Some(i_task_val) =>
-              if i_task_val.deleted then
-                mm
-              else
-                var dstModel := copyTaskToModel(i_task_val, i_dst_val, dstList);
-                MultiModel(mm.projects[dstProjectId := dstModel])
-            case None =>
-              mm
-          }
-        case None =>
+  if (srcProjectId in mm.projects) then
+    var i_src_val := mm.projects[srcProjectId];
+    if (dstProjectId in mm.projects) then
+      var i_dst_val := mm.projects[dstProjectId];
+      if (taskId in i_src_val.taskData) then
+        var i_task_val := i_src_val.taskData[taskId];
+        if i_task_val.deleted then
           mm
-      }
-    case None =>
+        else
+          var dstModel := copyTaskToModel(i_task_val, i_dst_val, dstList);
+          MultiModel(mm.projects[dstProjectId := dstModel])
+      else
+        mm
+    else
       mm
-  }
+  else
+    mm
 }
 
 function applyOk(m: Model, a: Action): Model
@@ -1142,71 +1073,61 @@ function copyTasksFromLane(lane: seq<TaskId>, taskData: map<int, Task>, dstModel
     dstModel
   else
     var tid := lane[i];
-    var task := (if tid in taskData then Some(taskData[tid]) else None);
-    match task {
-      case Some(i_task_val) =>
-        if i_task_val.deleted then
-          copyTasksFromLane(lane, taskData, dstModel, dstList, (i + 1))
-        else
-          var newDst := copyTaskToModel(i_task_val, dstModel, dstList);
-          copyTasksFromLane(lane, taskData, newDst, dstList, (i + 1))
-      case None =>
+    if (tid in taskData) then
+      var i_task_val := taskData[tid];
+      if i_task_val.deleted then
         copyTasksFromLane(lane, taskData, dstModel, dstList, (i + 1))
-    }
+      else
+        var newDst := copyTaskToModel(i_task_val, dstModel, dstList);
+        copyTasksFromLane(lane, taskData, newDst, dstList, (i + 1))
+    else
+      copyTasksFromLane(lane, taskData, dstModel, dstList, (i + 1))
 }
 
 function tryMoveListTo(mm: MultiModel, srcProjectId: ProjectId, dstProjectId: ProjectId, listId: ListId): MultiModel
 {
-  var src := (if srcProjectId in mm.projects then Some(mm.projects[srcProjectId]) else None);
-  match src {
-    case Some(i_src_val) =>
-      var dst := (if dstProjectId in mm.projects then Some(mm.projects[dstProjectId]) else None);
-      match dst {
-        case Some(i_dst_val) =>
-          if !((listId in i_src_val.lists)) then
+  if (srcProjectId in mm.projects) then
+    var i_src_val := mm.projects[srcProjectId];
+    if (dstProjectId in mm.projects) then
+      var i_dst_val := mm.projects[dstProjectId];
+      if !((listId in i_src_val.lists)) then
+        mm
+      else
+        if (listId in i_src_val.listNames) then
+          var i_listName_val := i_src_val.listNames[listId];
+          var r1 := apply(i_dst_val, AddList(i_listName_val));
+          if !(r1.true_?) then
             mm
           else
-            var listName := (if listId in i_src_val.listNames then Some(i_src_val.listNames[listId]) else None);
-            match listName {
-              case Some(i_listName_val) =>
-                var r1 := apply(i_dst_val, AddList(i_listName_val));
-                if !(r1.true_?) then
-                  mm
-                else
-                  var newListId := (r1.value.nextListId - 1);
-                  var lane := (match (if listId in i_src_val.tasks then Some(i_src_val.tasks[listId]) else None) { case Some(i_value) => i_value case None => [] });
-                  var dstModel := copyTasksFromLane(lane, i_src_val.taskData, r1.value, newListId, 0);
-                  var r2 := apply(i_src_val, DeleteList(listId));
-                  if !(r2.true_?) then
-                    mm
-                  else
-                    MultiModel(mm.projects[srcProjectId := r2.value][dstProjectId := dstModel])
-              case None =>
-                mm
-            }
-        case None =>
+            var newListId := (r1.value.nextListId - 1);
+            var lane := if (listId in i_src_val.tasks) then var i_value := i_src_val.tasks[listId]; i_value else [];
+            var dstModel := copyTasksFromLane(lane, i_src_val.taskData, r1.value, newListId, 0);
+            var r2 := apply(i_src_val, DeleteList(listId));
+            if !(r2.true_?) then
+              mm
+            else
+              MultiModel(mm.projects[srcProjectId := r2.value][dstProjectId := dstModel])
+        else
           mm
-      }
-    case None =>
+    else
       mm
-  }
+  else
+    mm
 }
 
 function tryApplyMulti(mm: MultiModel, action: MultiAction): MultiModel
 {
   match action {
     case SingleAction(i_action_projectId, i_action_action) =>
-      var project := (if i_action_projectId in mm.projects then Some(mm.projects[i_action_projectId]) else None);
-      match project {
-        case Some(i_project_val) =>
-          var result := apply(i_project_val, i_action_action);
-          if !(result.true_?) then
-            mm
-          else
-            MultiModel(mm.projects[i_action_projectId := result.value])
-        case None =>
+      if (i_action_projectId in mm.projects) then
+        var i_project_val := mm.projects[i_action_projectId];
+        var result := apply(i_project_val, i_action_action);
+        if !(result.true_?) then
           mm
-      }
+        else
+          MultiModel(mm.projects[i_action_projectId := result.value])
+      else
+        mm
     case MoveTaskTo(i_action_srcProject, i_action_dstProject, i_action_taskId, i_action_dstList, i_action_taskPlace) =>
       tryMoveTaskTo(mm, i_action_srcProject, i_action_dstProject, i_action_taskId, i_action_dstList, i_action_taskPlace)
     case CopyTaskTo(i_action_srcProject, i_action_dstProject, i_action_taskId, i_action_dstList) =>
