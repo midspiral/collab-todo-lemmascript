@@ -116,18 +116,27 @@ serve(async (req) => {
       })
     }
 
-    // Persist atomically
-    for (const id of changed) {
-      const { error: updateError } = await supabaseAdmin
-        .from('projects')
-        .update({ state: newStates[id], version: newVersions[id], updated_at: new Date().toISOString() })
-        .eq('id', id).eq('version', projectMap[id].version)
+    // Persist atomically via Postgres function (all-or-nothing)
+    // Falls back to sequential updates if save_multi_update doesn't exist
+    const updates = changed.map(id => ({
+      id,
+      state: JSON.stringify(newStates[id]),
+      expectedVersion: projectMap[id].version,
+      newVersion: newVersions[id],
+    }))
 
-      if (updateError) {
+    const { error: saveError } = await supabaseAdmin
+      .rpc('save_multi_update', { updates_json: JSON.stringify(updates) })
+
+    if (saveError) {
+      if (saveError.message?.includes('Version conflict')) {
         return new Response(JSON.stringify({ status: 'conflict', message: 'Concurrent modification' }), {
           status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         })
       }
+      return new Response(JSON.stringify({ error: 'Atomic save failed', details: saveError.message }), {
+        status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
     }
 
     return new Response(JSON.stringify({ status: 'accepted', versions: newVersions, states: newStates }), {

@@ -119,6 +119,17 @@ export class MultiProjectEffectManager {
           this.#setStatus('offline')
           this.#setError(null)
         } else {
+          // Fetch fresh state and reject — must transition effect machine out of Dispatching
+          const freshVersions = {}, freshStates = {}
+          for (const projectId of this.#projectIds) {
+            try {
+              const { state, version } = await backend.projects.load(projectId)
+              freshVersions[projectId] = version
+              freshStates[projectId] = state
+            } catch (loadErr) { console.error(`Failed to load project ${projectId}:`, loadErr) }
+          }
+          const cmd = this.#transition({ kind: 'DispatchRejected', freshVersions, freshModels: freshStates })
+          if (cmd) await this.#executeCommand(cmd)
           this.#setError(e.message)
           this.#setStatus('error')
         }

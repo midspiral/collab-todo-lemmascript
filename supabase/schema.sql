@@ -155,6 +155,36 @@ END;
 $$;
 
 -- ============================================================================
+-- Atomic multi-project update (for cross-project operations)
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION save_multi_update(updates_json TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+DECLARE
+  updates JSONB := updates_json::jsonb;
+  u RECORD;
+BEGIN
+  FOR u IN SELECT value FROM jsonb_array_elements(updates)
+  LOOP
+    UPDATE projects
+    SET state = (u.value->>'state')::jsonb,
+        version = (u.value->>'newVersion')::int,
+        updated_at = now()
+    WHERE id = (u.value->>'id')::uuid
+    AND version = (u.value->>'expectedVersion')::int;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Version conflict on project %', u.value->>'id';
+    END IF;
+  END LOOP;
+
+  RETURN jsonb_build_object('success', true);
+END;
+$$;
+
+-- ============================================================================
 -- Realtime
 -- ============================================================================
 
