@@ -2094,6 +2094,106 @@ lemma TryApplyMultiPreservesMultiInv(mm: MultiModel, action: MultiAction)
 }
 
 // =============================================================================
+// Unfold lemmas: connect apply(m, Action) to concrete field updates.
+// The generated apply wraps map access in Option (match Some/None), making it
+// opaque to the solver. These lemmas unfold through the Option to give Dafny
+// the direct field-update form.
+// =============================================================================
+
+lemma UnfoldCompleteTask(m: Model, taskId: TaskId)
+  requires taskId in m.taskData && !m.taskData[taskId].deleted
+  ensures apply(m, CompleteTask(taskId)) == true_(m.(taskData := m.taskData[taskId := m.taskData[taskId].(completed := true)]))
+{}
+
+lemma UnfoldUncompleteTask(m: Model, taskId: TaskId)
+  requires taskId in m.taskData && !m.taskData[taskId].deleted
+  ensures apply(m, UncompleteTask(taskId)) == true_(m.(taskData := m.taskData[taskId := m.taskData[taskId].(completed := false)]))
+{}
+
+lemma UnfoldStarTask(m: Model, taskId: TaskId)
+  requires taskId in m.taskData && !m.taskData[taskId].deleted
+  ensures apply(m, StarTask(taskId)) == true_(m.(taskData := m.taskData[taskId := m.taskData[taskId].(starred := true)]))
+{}
+
+lemma UnfoldUnstarTask(m: Model, taskId: TaskId)
+  requires taskId in m.taskData && !m.taskData[taskId].deleted
+  ensures apply(m, UnstarTask(taskId)) == true_(m.(taskData := m.taskData[taskId := m.taskData[taskId].(starred := false)]))
+{}
+
+lemma UnfoldSetDueDate(m: Model, taskId: TaskId, dueDate: Option<DateVal>)
+  requires taskId in m.taskData && !m.taskData[taskId].deleted
+  requires dueDate.Some? ==> validDate(dueDate.value)
+  ensures apply(m, SetDueDate(taskId, dueDate)) == true_(m.(taskData := m.taskData[taskId := m.taskData[taskId].(dueDate := dueDate)]))
+{}
+
+lemma UnfoldAssignTask(m: Model, taskId: TaskId, userId: UserId)
+  requires taskId in m.taskData && !m.taskData[taskId].deleted
+  requires userId in m.members
+  requires userId in m.taskData[taskId].assignees
+  ensures apply(m, AssignTask(taskId, userId)) == true_(m)
+{}
+
+lemma UnfoldUnassignTask(m: Model, taskId: TaskId, userId: UserId)
+  requires taskId in m.taskData && !m.taskData[taskId].deleted
+  ensures apply(m, UnassignTask(taskId, userId)) == true_(m.(taskData := m.taskData[taskId := m.taskData[taskId].(assignees := without(m.taskData[taskId].assignees, userId))]))
+{}
+
+lemma UnfoldAddTagToTask(m: Model, taskId: TaskId, tagId: TagId)
+  requires taskId in m.taskData && !m.taskData[taskId].deleted
+  requires tagId in m.tags
+  requires tagId in m.taskData[taskId].tags
+  ensures apply(m, AddTagToTask(taskId, tagId)) == true_(m)
+{}
+
+lemma UnfoldRemoveTagFromTask(m: Model, taskId: TaskId, tagId: TagId)
+  requires taskId in m.taskData && !m.taskData[taskId].deleted
+  ensures apply(m, RemoveTagFromTask(taskId, tagId)) == true_(m.(taskData := m.taskData[taskId := m.taskData[taskId].(tags := without(m.taskData[taskId].tags, tagId))]))
+{}
+
+// listNameExists is false when renaming to the same name (by Inv M, name is unique)
+lemma ListNameExistsFalseWhenSame(m: Model, listId: ListId, newName: string)
+  requires Inv(m)
+  requires listId in m.lists
+  requires listId in m.listNames
+  requires m.listNames[listId] == newName
+  ensures !listNameExists(m, newName, Some(listId))
+{
+  ListNameExistsFromFalseInv(m.lists, m.listNames, newName, listId, 0);
+}
+
+// Given Inv M (names unique), listNameExistsFrom is false when checking the current name
+lemma ListNameExistsFromFalseInv(lists: seq<ListId>, listNames: map<int, string>,
+    name: string, excludeId: ListId, i: int)
+  requires 0 <= i <= |lists|
+  requires forall l :: l in listNames <==> l in lists
+  requires excludeId in lists && excludeId in listNames && listNames[excludeId] == name
+  requires forall l1, l2 :: l1 in listNames && l2 in listNames && l1 != l2 ==> !eqIgnoreCase(listNames[l1], listNames[l2])
+  ensures !listNameExistsFrom(lists, listNames, name, Some(excludeId), i)
+  decreases |lists| - i
+{
+  if i < |lists| {
+    var lid := lists[i];
+    if lid != excludeId && lid in listNames {
+      assert !eqIgnoreCase(listNames[lid], listNames[excludeId]);
+    }
+    ListNameExistsFromFalseInv(lists, listNames, name, excludeId, i + 1);
+  }
+}
+
+lemma UnfoldRenameList(m: Model, listId: ListId, newName: string)
+  requires listId in m.lists
+  requires !listNameExists(m, newName, Some(listId))
+  ensures apply(m, RenameList(listId, newName)) == true_(m.(listNames := m.listNames[listId := newName]))
+{}
+
+lemma UnfoldEditTask(m: Model, taskId: TaskId, title: string, notes: string)
+  requires taskId in m.taskData && !m.taskData[taskId].deleted
+  requires var listId := findListForTask(m, taskId);
+           listId.Some? ==> !taskTitleExistsInList(m, listId.value, title, Some(taskId))
+  ensures apply(m, EditTask(taskId, title, notes)) == true_(m.(taskData := m.taskData[taskId := m.taskData[taskId].(title := title, notes := notes)]))
+{}
+
+// =============================================================================
 // Part 3: NoOp Sanity — Complete Enumeration of Identity Cases
 // =============================================================================
 
@@ -2372,40 +2472,70 @@ lemma {:timeLimit 300} NoOpImpliesUnchanged(m: Model, a: Action)
     return;
   }
   if NoOpRenameListSameName(m, a) {
-    // Name unchanged → listNameExists returns false → apply returns m
-    assume {:axiom} apply(m, a) == true_(m);
+    // listNameExists is a function-by-method; help Dafny see it's false.
+    // Spec body: exists lid :: lid in m.lists && (exclude.None? || lid != exclude.value) && eqIgnoreCase(...)
+    // By Inv M, no other list has the same name → no such lid exists.
+    ListNameExistsFalseWhenSame(m, a.listId, a.newName);
+    UnfoldRenameList(m, a.listId, a.newName);
+    assert m.listNames[a.listId := a.newName] == m.listNames;
     return;
   }
   if NoOpEditTaskSameContent(m, a) {
-    // title and notes unchanged → apply returns m
-    // The tricky part: apply checks taskTitleExistsInList which calls findListForTask.
-    // Since the title IS the same, no duplicate exists. Use assume for this case.
-    assume {:axiom} apply(m, a) == true_(m);
+    // Need to show apply succeeds with same title.
+    // apply checks findListForTask then taskTitleExistsInList.
+    // Both are function-by-method. Use the fact that apply(m, a) == true_(m) (precondition)
+    // to know it succeeded, then show the result equals m.
+    // The precondition already tells us apply returned true_(something).
+    // Since title/notes are the same, the "something" must equal m.
+    assume {:axiom} apply(m, a) == true_(m); // TODO: unfold EditTask with title uniqueness
     return;
   }
   if NoOpSetDueDateSame(m, a) {
+    UnfoldSetDueDate(m, a.taskId, a.dueDate);
     var t := m.taskData[a.taskId];
     assert t.(dueDate := a.dueDate) == t;
-    assert m.taskData[a.taskId := t.(dueDate := a.dueDate)] == m.taskData;
+    assert m.taskData[a.taskId := t] == m.taskData;
     return;
   }
   if NoOpRenameTagSameName(m, a) {
     assert m.tags[a.tagId := Tag(a.newName)] == m.tags;
     return;
   }
-  if NoOpCompleteTaskAlready(m, a) { assume {:axiom} apply(m, a) == true_(m); return; }
-  if NoOpUncompleteTaskAlready(m, a) { assume {:axiom} apply(m, a) == true_(m); return; }
-  // Remaining zero-effect cases: the generated Dafny wraps map access in Option,
-  // making these trivial equalities opaque to the solver. Each case is sound —
-  // the updated field equals the original — but Dafny can't unfold through
-  // the function-by-method Option pattern.
-  // TODO: prove these by helping Dafny unfold the Option matching in apply.
-  if NoOpStarTaskAlready(m, a) { assume {:axiom} apply(m, a) == true_(m); return; }
-  if NoOpUnstarTaskAlready(m, a) { assume {:axiom} apply(m, a) == true_(m); return; }
-  if NoOpAssignTaskAlready(m, a) { assume {:axiom} apply(m, a) == true_(m); return; }
-  if NoOpUnassignTaskMissing(m, a) { assume {:axiom} apply(m, a) == true_(m); return; }
-  if NoOpAddTagToTaskAlready(m, a) { assume {:axiom} apply(m, a) == true_(m); return; }
-  if NoOpRemoveTagFromTaskMissing(m, a) { assume {:axiom} apply(m, a) == true_(m); return; }
+  if NoOpCompleteTaskAlready(m, a) {
+    UnfoldCompleteTask(m, a.taskId);
+    var t := m.taskData[a.taskId]; assert t.(completed := true) == t;
+    assert m.taskData[a.taskId := t] == m.taskData; return;
+  }
+  if NoOpUncompleteTaskAlready(m, a) {
+    UnfoldUncompleteTask(m, a.taskId);
+    var t := m.taskData[a.taskId]; assert t.(completed := false) == t;
+    assert m.taskData[a.taskId := t] == m.taskData; return;
+  }
+  if NoOpStarTaskAlready(m, a) {
+    UnfoldStarTask(m, a.taskId);
+    var t := m.taskData[a.taskId]; assert t.(starred := true) == t;
+    assert m.taskData[a.taskId := t] == m.taskData; return;
+  }
+  if NoOpUnstarTaskAlready(m, a) {
+    UnfoldUnstarTask(m, a.taskId);
+    var t := m.taskData[a.taskId]; assert t.(starred := false) == t;
+    assert m.taskData[a.taskId := t] == m.taskData; return;
+  }
+  if NoOpAssignTaskAlready(m, a) { UnfoldAssignTask(m, a.taskId, a.userId); return; }
+  if NoOpUnassignTaskMissing(m, a) {
+    UnfoldUnassignTask(m, a.taskId, a.userId);
+    WithoutNoOp(m.taskData[a.taskId].assignees, a.userId);
+    var t := m.taskData[a.taskId]; assert t.(assignees := without(t.assignees, a.userId)) == t;
+    assert m.taskData[a.taskId := t] == m.taskData; return;
+  }
+  if NoOpAddTagToTaskAlready(m, a) { UnfoldAddTagToTask(m, a.taskId, a.tagId); return; }
+  if NoOpRemoveTagFromTaskMissing(m, a) {
+    UnfoldRemoveTagFromTask(m, a.taskId, a.tagId);
+    WithoutNoOp(m.taskData[a.taskId].tags, a.tagId);
+    var t := m.taskData[a.taskId]; assert t.(tags := without(t.tags, a.tagId)) == t;
+    assert m.taskData[a.taskId := t] == m.taskData; return;
+  }
+  // MoveList/MoveTask same position — complex, axioms for now
   if NoOpMoveListSamePosition(m, a) { assume {:axiom} apply(m, a) == true_(m); return; }
   assume {:axiom} apply(m, a) == true_(m); // NoOpMoveTaskSamePosition
 }
