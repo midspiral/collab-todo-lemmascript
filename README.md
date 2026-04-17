@@ -102,7 +102,7 @@ Verifies `src/domain.proofs.dfy` — the proofs establishing the 16-conjunct inv
 ```
 src/domain.ts          ← single source of truth (TypeScript + LemmaScript annotations)
   ├── src/domain.dfy        generated Dafny (lsc regen)
-  ├── src/domain.proofs.dfy hand-written proofs
+  ├── src/domain.proofs.dfy separate proofs
   ├── src/App.jsx            React UI (imports domain.ts directly)
   ├── src/hooks/             effect manager + React hooks (imports domain.ts directly)
   └── supabase/functions/    edge functions (imports domain.ts directly)
