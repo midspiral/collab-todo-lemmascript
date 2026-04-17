@@ -528,10 +528,11 @@ lemma MoveTaskCountForOther(m: Model, cleaned: map<int, seq<int>>,
 }
 
 // If tid has the same membership in corresponding lanes, counts are equal
+// Counts are equal when tasks agree on membership for all lists in the iteration
 lemma CountSameMembership(lists: seq<int>, tasks1: map<int, seq<int>>,
     tasks2: map<int, seq<int>>, tid: int)
-  requires forall l :: l in tasks1 <==> l in tasks2
-  requires forall l :: l in tasks1 ==> (tid in tasks1[l]) == (tid in tasks2[l])
+  requires forall l :: l in lists ==> (l in tasks1 <==> l in tasks2)
+  requires forall l :: l in lists && l in tasks1 ==> (tid in tasks1[l]) == (tid in tasks2[l])
   ensures CountInListsHelper(lists, tasks1, tid) == CountInListsHelper(lists, tasks2, tid)
   decreases |lists|
 {
@@ -883,7 +884,55 @@ lemma RenameListPreservesInv(m: Model, listId: int, newName: string, m2: Model)
 }
 
 // --- DeleteList ---
-lemma DeleteListPreservesInv(m: Model, listId: int, m2: Model)
+// Helper: properties of remaining tasks after removing a lane's tasks
+lemma {:timeLimit 60} DeleteListTaskDataProps(m: Model, listId: int,
+    lane: seq<int>, newTaskData: map<int, Task>, newTasks: map<int, seq<int>>)
+  requires Inv(m) && listId in m.lists && listId in m.tasks
+  requires lane == m.tasks[listId]
+  requires newTaskData == removeKeysFromRecord(m.taskData, lane, 0)
+  requires newTasks == (map k | k in m.tasks && k != listId :: m.tasks[k])
+  // F: tags valid
+  ensures forall id :: id in newTaskData ==> forall t :: t in newTaskData[id].tags ==> t in m.tags
+  // H: assignees are members
+  ensures forall id :: id in newTaskData ==> forall u :: u in newTaskData[id].assignees ==> u in m.members
+  // L: due dates valid
+  ensures forall id :: id in newTaskData && newTaskData[id].dueDate.Some? ==> validDate(newTaskData[id].dueDate.value)
+  // N: title uniqueness
+  ensures forall l, t1, t2 ::
+    (l in newTasks && t1 in newTasks[l] && t1 in newTaskData && !newTaskData[t1].deleted
+     && t2 in newTasks[l] && t2 in newTaskData && !newTaskData[t2].deleted && t1 != t2)
+    ==> !eqIgnoreCase(newTaskData[t1].title, newTaskData[t2].title)
+{
+  forall id | id in newTaskData
+    ensures forall t :: t in newTaskData[id].tags ==> t in m.tags
+    ensures forall u :: u in newTaskData[id].assignees ==> u in m.members
+  {
+    RemoveKeysDomain(m.taskData, lane, id, 0);
+    RemoveKeysPreservesOther(m.taskData, lane, id, 0);
+  }
+  forall id | id in newTaskData && newTaskData[id].dueDate.Some?
+    ensures validDate(newTaskData[id].dueDate.value)
+  {
+    RemoveKeysDomain(m.taskData, lane, id, 0);
+    RemoveKeysPreservesOther(m.taskData, lane, id, 0);
+  }
+  forall l, t1, t2 | l in newTasks
+    && t1 in newTasks[l] && t1 in newTaskData && !newTaskData[t1].deleted
+    && t2 in newTasks[l] && t2 in newTaskData && !newTaskData[t2].deleted
+    && t1 != t2
+    ensures !eqIgnoreCase(newTaskData[t1].title, newTaskData[t2].title)
+  {
+    // t1, t2 in newTasks[l] where l != listId → they're in m.tasks[l]
+    // They can't also be in lane (= m.tasks[listId]) — that would give count >= 2
+    RemoveKeysDomain(m.taskData, lane, t1, 0);
+    RemoveKeysDomain(m.taskData, lane, t2, 0);
+    // Now Dafny knows t1 !in lane and t2 !in lane
+    RemoveKeysPreservesOther(m.taskData, lane, t1, 0);
+    RemoveKeysPreservesOther(m.taskData, lane, t2, 0);
+  }
+}
+
+lemma {:timeLimit 120} DeleteListPreservesInv(m: Model, listId: int, m2: Model)
   requires Inv(m)
   requires apply(m, DeleteList(listId)) == true_(m2)
   ensures Inv(m2)
@@ -900,11 +949,16 @@ lemma DeleteListPreservesInv(m: Model, listId: int, m2: Model)
     // A: NoDup
     WithoutPreservesNoDup(m.lists, listId);
 
-    // B: domains match (without removes listId from lists; map comprehension removes from maps)
-    forall l ensures l in newListNames <==> l in newLists
-    { WithoutKeeps(m.lists, listId, l); }
-    forall l ensures l in newTasks <==> l in newLists
-    { WithoutKeeps(m.lists, listId, l); }
+    // B: domains match
+    // newLists = without(m.lists, listId): contains l iff l in m.lists && l != listId
+    // newListNames = {k in m.listNames | k != listId}: same as {k in m.lists | k != listId} by Inv B
+    // newTasks = {k in m.tasks | k != listId}: same by Inv B
+    WithoutRemoves(m.lists, listId);
+    WithoutSubset(m.lists, listId);
+    forall l ensures l in newLists <==> (l in m.lists && l != listId)
+    {
+      if l in m.lists && l != listId { WithoutKeeps(m.lists, listId, l); }
+    }
 
     // C: tasks in remaining lanes exist in newTaskData
     forall l, tid | l in newTasks && tid in newTasks[l]
@@ -946,11 +1000,16 @@ lemma DeleteListPreservesInv(m: Model, listId: int, m2: Model)
     }
 
     // E: NoDup in each lane (lanes unchanged)
-    // G: allocators fresh — without elements are subset of original
-    forall lid | lid in newLists ensures lid < m2.nextListId
-    {
-      WithoutKeeps(m.lists, listId, lid);
-    }
+    // G: allocators fresh
+    WithoutSubset(m.lists, listId);
+
+    // F, H, L, N: delegated to helper
+    DeleteListTaskDataProps(m, listId, lane, newTaskData, newTasks);
+
+    // I-P: mode, owner, members unchanged
+    assert m2.mode == m.mode;
+    assert m2.owner == m.owner;
+    assert m2.members == m.members;
   }
 }
 
@@ -2460,8 +2519,8 @@ lemma TaskTitleExistsFromFalseInv(lane: seq<TaskId>, taskData: map<int, Task>,
     title: string, excludeId: TaskId, i: int)
   requires 0 <= i <= |lane|
   // No non-deleted task in lane (other than excludeId) has eqIgnoreCase title
-  requires forall j :: i <= j < |lane| && lane[j] != excludeId && lane[j] in taskData
-    && !taskData[lane[j]].deleted ==> !eqIgnoreCase(taskData[lane[j]].title, title)
+  requires forall j :: (i <= j < |lane| && lane[j] != excludeId && lane[j] in taskData
+    && !taskData[lane[j]].deleted) ==> !eqIgnoreCase(taskData[lane[j]].title, title)
   ensures !taskTitleExistsFrom(lane, taskData, title, Some(excludeId), i)
   decreases |lane| - i
 {
