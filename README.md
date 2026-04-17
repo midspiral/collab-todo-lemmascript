@@ -82,7 +82,7 @@ Also runs automatically as part of `npm run build`.
 ../LemmaScript/tools/check.sh dafny
 ```
 
-This regenerates `src/domain.dfy` from `src/domain.ts` via LemmaScript, then runs `dafny verify`. Expects 85 verified, 0 errors.
+This regenerates `src/domain.dfy` from `src/domain.ts` via LemmaScript, then runs `dafny verify`.
 
 When making changes to the `src/domain.ts`, you can also regenerate the `dfy` from the generated `dfy.gen` using:
 ```bash
@@ -95,7 +95,7 @@ npx tsx ../LemmaScript/tools/src/lsc.ts regen --backend=dafny  src/domain.ts
 ./check-extra.sh
 ```
 
-Verifies `src/domain.proofs.dfy` — the proofs establishing the 16-conjunct invariant and its preservation across all actions (single-project, cross-project, and NoOp sanity). Expects 131 verified, 0 errors.
+Verifies `src/domain.proofs.dfy` — the proofs establishing the 16-conjunct invariant and its preservation across all actions (single-project, cross-project, and NoOp completeness/soundness).
 
 ## Architecture
 
