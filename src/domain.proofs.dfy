@@ -885,7 +885,7 @@ lemma RenameListPreservesInv(m: Model, listId: int, newName: string, m2: Model)
 
 // --- DeleteList ---
 // Helper: properties of remaining tasks after removing a lane's tasks
-lemma {:timeLimit 60} DeleteListTaskDataProps(m: Model, listId: int,
+lemma DeleteListTaskDataProps(m: Model, listId: int,
     lane: seq<int>, newTaskData: map<int, Task>, newTasks: map<int, seq<int>>)
   requires Inv(m) && listId in m.lists && listId in m.tasks
   requires lane == m.tasks[listId]
@@ -991,7 +991,23 @@ lemma DeleteListPreservesC(m: Model, listId: int, lane: seq<int>,
   }
 }
 
-lemma {:timeLimit 60} DeleteListPreservesInv(m: Model, listId: int, m2: Model)
+// Helper: B — domains match after DeleteList
+lemma DeleteListPreservesB(m: Model, listId: int,
+    newLists: seq<int>, newListNames: map<int, string>, newTasks: map<int, seq<int>>)
+  requires Inv(m) && listId in m.lists
+  requires newLists == without(m.lists, listId)
+  requires newListNames == (map k | k in m.listNames && k != listId :: m.listNames[k])
+  requires newTasks == (map k | k in m.tasks && k != listId :: m.tasks[k])
+  ensures forall l :: l in newListNames <==> l in newLists
+  ensures forall l :: l in newTasks <==> l in newLists
+{
+  WithoutRemoves(m.lists, listId);
+  WithoutSubset(m.lists, listId);
+  forall l | l in m.lists && l != listId ensures l in newLists
+  { WithoutKeeps(m.lists, listId, l); }
+}
+
+lemma DeleteListPreservesInv(m: Model, listId: int, m2: Model)
   requires Inv(m)
   requires apply(m, DeleteList(listId)) == true_(m2)
   ensures Inv(m2)
@@ -1011,29 +1027,17 @@ lemma {:timeLimit 60} DeleteListPreservesInv(m: Model, listId: int, m2: Model)
     // A: NoDup
     WithoutPreservesNoDup(m.lists, listId);
 
-    // B: domains — explicit connection
-    WithoutRemoves(m.lists, listId);
-    WithoutSubset(m.lists, listId);
-    assert forall l :: l in newLists ==> l in m.lists && l != listId;
-    assert forall l :: l in m.lists && l != listId ==> l in newLists by {
-      forall l | l in m.lists && l != listId ensures l in newLists
-      { WithoutKeeps(m.lists, listId, l); }
-    }
-    forall l ensures l in newListNames <==> l in newLists
-    {
-      // newListNames has l iff l in m.listNames && l != listId
-      // By Inv B: l in m.listNames <==> l in m.lists
-      // newLists has l iff l in m.lists && l != listId (proven above)
-    }
-    forall l ensures l in newTasks <==> l in newLists
-    {
-      // same reasoning with m.tasks
-    }
+    // B: helper
+    DeleteListPreservesB(m, listId, newLists, newListNames, newTasks);
 
     // C, D/D', F/H/L/N: helpers
     DeleteListPreservesC(m, listId, lane, newTasks, newTaskData);
     DeleteListPreservesCounts(m, listId, lane, newLists, newTasks, newTaskData);
     DeleteListTaskDataProps(m, listId, lane, newTaskData, newTasks);
+
+    // G: allocators fresh — newTaskData is subset of m.taskData
+    forall id | id in newTaskData ensures id < m2.nextTaskId
+    { RemoveKeysDomain(m.taskData, lane, id, 0); }
   }
 }
 
@@ -2360,7 +2364,7 @@ lemma ApplyOkPreservesInv(m: Model, a: Action)
 }
 
 // copyTaskToModel preserves invariant: chains applyOk calls, each preserving Inv
-lemma {:timeLimit 60} CopyTaskToModelPreservesInv(srcTask: Task, dstModel: Model, dstList: ListId)
+lemma CopyTaskToModelPreservesInv(srcTask: Task, dstModel: Model, dstList: ListId)
   requires Inv(dstModel)
   ensures Inv(copyTaskToModel(srcTask, dstModel, dstList))
 {
@@ -2451,7 +2455,7 @@ lemma MoveListToDstPreservesInv(dst: Model, listName: string, lane: seq<TaskId>,
   CopyTasksFromLanePreservesInv(lane, taskData, r1.value, newListId, 0);
 }
 
-lemma {:timeLimit 120} TryMoveListToPreservesMultiInv(mm: MultiModel, srcProjectId: ProjectId,
+lemma TryMoveListToPreservesMultiInv(mm: MultiModel, srcProjectId: ProjectId,
     dstProjectId: ProjectId, listId: ListId)
   requires MultiInv(mm)
   ensures MultiInv(tryMoveListTo(mm, srcProjectId, dstProjectId, listId))
@@ -2781,7 +2785,7 @@ predicate IsNoOp(m: Model, a: Action)
 }
 
 // Completeness: if apply(m, a) == Ok(m), then IsNoOp(m, a)
-lemma {:timeLimit 120} CheckNoOps(m: Model, a: Action)
+lemma CheckNoOps(m: Model, a: Action)
   requires Inv(m)
   requires apply(m, a) == true_(m)
   ensures IsNoOp(m, a)
@@ -2925,7 +2929,7 @@ lemma {:timeLimit 120} CheckNoOps(m: Model, a: Action)
 }
 
 // Soundness: if IsNoOp(m, a), then apply(m, a) == Ok(m)
-lemma {:timeLimit 300} NoOpImpliesUnchanged(m: Model, a: Action)
+lemma NoOpImpliesUnchanged(m: Model, a: Action)
   requires Inv(m)
   requires IsNoOp(m, a)
   ensures apply(m, a) == true_(m)

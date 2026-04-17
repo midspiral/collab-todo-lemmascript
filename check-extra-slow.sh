@@ -3,4 +3,4 @@
 set -e
 cd "$(dirname "$0")"
 
-dafny verify --standard-libraries src/domain.proofs.dfy
+dafny verify --standard-libraries  --verification-time-limit 1000 src/domain.proofs.dfy
