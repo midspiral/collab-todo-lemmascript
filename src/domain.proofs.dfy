@@ -932,7 +932,44 @@ lemma {:timeLimit 60} DeleteListTaskDataProps(m: Model, listId: int,
   }
 }
 
-lemma {:timeLimit 120} DeleteListPreservesInv(m: Model, listId: int, m2: Model)
+// Helper: D/D' counts preserved after DeleteList
+lemma DeleteListPreservesCounts(m: Model, listId: int, lane: seq<int>,
+    newLists: seq<int>, newTasks: map<int, seq<int>>, newTaskData: map<int, Task>)
+  requires Inv(m) && listId in m.lists && listId in m.tasks
+  requires lane == m.tasks[listId]
+  requires newLists == without(m.lists, listId)
+  requires newTasks == (map k | k in m.tasks && k != listId :: m.tasks[k])
+  requires newTaskData == removeKeysFromRecord(m.taskData, lane, 0)
+  ensures forall tid :: (tid in newTaskData && !newTaskData[tid].deleted) ==>
+    CountInListsHelper(newLists, newTasks, tid) == 1
+  ensures forall tid :: (tid in newTaskData && newTaskData[tid].deleted) ==>
+    CountInListsHelper(newLists, newTasks, tid) == 0
+{
+  // listId !in newLists, so for all l in newLists: l in newTasks <==> l in m.tasks
+  WithoutRemoves(m.lists, listId);
+  WithoutSubset(m.lists, listId);
+  assert listId !in newLists;
+  assert forall l :: l in newLists ==> (l in newTasks <==> l in m.tasks);
+
+  forall tid | tid in newTaskData && !newTaskData[tid].deleted
+    ensures CountInListsHelper(newLists, newTasks, tid) == 1
+  {
+    RemoveKeysDomain(m.taskData, lane, tid, 0);
+    RemoveKeysPreservesOther(m.taskData, lane, tid, 0);
+    CountRemoveOne(m.lists, m.tasks, tid, listId);
+    CountSameMembership(newLists, newTasks, m.tasks, tid);
+  }
+  forall tid | tid in newTaskData && newTaskData[tid].deleted
+    ensures CountInListsHelper(newLists, newTasks, tid) == 0
+  {
+    RemoveKeysDomain(m.taskData, lane, tid, 0);
+    RemoveKeysPreservesOther(m.taskData, lane, tid, 0);
+    CountRemoveOne(m.lists, m.tasks, tid, listId);
+    CountSameMembership(newLists, newTasks, m.tasks, tid);
+  }
+}
+
+lemma {:timeLimit 60} DeleteListPreservesInv(m: Model, listId: int, m2: Model)
   requires Inv(m)
   requires apply(m, DeleteList(listId)) == true_(m2)
   ensures Inv(m2)
@@ -974,30 +1011,8 @@ lemma {:timeLimit 120} DeleteListPreservesInv(m: Model, listId: int, m2: Model)
       RemoveKeysPreservesOther(m.taskData, lane, tid, 0);
     }
 
-    // D/D': counts for remaining tasks
-    // Tasks in the deleted lane are removed from taskData entirely.
-    // Tasks NOT in the deleted lane have same count (lane removed but wasn't contributing).
-    forall tid | tid in newTaskData && !newTaskData[tid].deleted
-      ensures CountInListsHelper(newLists, newTasks, tid) == 1
-    {
-      RemoveKeysDomain(m.taskData, lane, tid, 0);
-      assert tid in m.taskData && tid !in lane;
-      RemoveKeysPreservesOther(m.taskData, lane, tid, 0);
-      assert newTaskData[tid] == m.taskData[tid];
-      CountRemoveOne(m.lists, m.tasks, tid, listId);
-      CountSameMembership(newLists, newTasks, m.tasks, tid);
-    }
-
-    forall tid | tid in newTaskData && newTaskData[tid].deleted
-      ensures CountInListsHelper(newLists, newTasks, tid) == 0
-    {
-      RemoveKeysDomain(m.taskData, lane, tid, 0);
-      assert tid in m.taskData && tid !in lane;
-      RemoveKeysPreservesOther(m.taskData, lane, tid, 0);
-      assert newTaskData[tid] == m.taskData[tid];
-      CountRemoveOne(m.lists, m.tasks, tid, listId);
-      CountSameMembership(newLists, newTasks, m.tasks, tid);
-    }
+    // D/D': delegated to helper
+    DeleteListPreservesCounts(m, listId, lane, newLists, newTasks, newTaskData);
 
     // E: NoDup in each lane (lanes unchanged)
     // G: allocators fresh
