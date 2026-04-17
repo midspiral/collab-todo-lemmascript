@@ -222,7 +222,7 @@ function taskTitleExistsInList(m: Model, listId: ListId, title: string, excludeT
 //@ pure
 function tagNameExists(m: Model, name: string, excludeTag?: TagId): boolean {
   for (const [tid, tag] of Object.entries(m.tags)) {
-    if (excludeTag === undefined || tid !== excludeTag) {
+    if (excludeTag === undefined || Number(tid) !== excludeTag) {
       if (eqIgnoreCase(tag.name, name)) return true
     }
   }
@@ -290,10 +290,9 @@ function removeTagFromAllTasks(taskData: Record<number, Task>, tagId: TagId): Re
   //@ havoc
   for (const [tid, task] of Object.entries(taskData)) {
     const newTags = without(task.tags, tagId)
-    result.set(tid, { ...task, tags: newTags })
+    result.set(Number(tid), { ...task, tags: newTags })
   }
-  //@ as Record
-  return result
+  return Object.fromEntries(result)
 }
 
 // Clear an assignee from all tasks — iterates taskData map (no known key list)
@@ -303,10 +302,9 @@ function clearAssigneeFromAllTasks(taskData: Record<number, Task>, userId: UserI
   //@ havoc
   for (const [tid, task] of Object.entries(taskData)) {
     const newAssignees = without(task.assignees, userId)
-    result.set(tid, { ...task, assignees: newAssignees })
+    result.set(Number(tid), { ...task, assignees: newAssignees })
   }
-  //@ as Record
-  return result
+  return Object.fromEntries(result)
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -472,6 +470,7 @@ function applyAssignTask(m: Model, taskId: TaskId, userId: UserId): Result<Model
   if (task === undefined) return err('MissingTask')
   if (task.deleted) return err('TaskDeleted')
   if (!m.members.includes(userId)) return err('NotAMember')
+  if (task.assignees.includes(userId)) return ok(m)
   return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, assignees: [...task.assignees, userId] } } })
 }
 
@@ -487,6 +486,7 @@ function applyAddTagToTask(m: Model, taskId: TaskId, tagId: TagId): Result<Model
   if (task === undefined) return err('MissingTask')
   if (task.deleted) return err('TaskDeleted')
   if (!(tagId in m.tags)) return err('MissingTag')
+  if (task.tags.includes(tagId)) return ok(m)
   return ok({ ...m, taskData: { ...m.taskData, [taskId]: { ...task, tags: [...task.tags, tagId] } } })
 }
 
@@ -924,8 +924,7 @@ function mergeVersions(base: Record<string, number>, updates: Record<string, num
   for (const [pid, v] of Object.entries(updates)) {
     result.set(pid, v)
   }
-  //@ as Record
-  return result
+  return Object.fromEntries(result)
 }
 
 //@ pure
@@ -939,8 +938,7 @@ function mergeModels(base: Record<string, Model>, updates: Record<string, Model>
   for (const [pid, m] of Object.entries(updates)) {
     result.set(pid, m)
   }
-  //@ as Record
-  return result
+  return Object.fromEntries(result)
 }
 
 // ═══════════════════════════════════════════════════════════════

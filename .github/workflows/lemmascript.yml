@@ -33,6 +33,12 @@ jobs:
         with:
           dafny-version: '4.11.0'
 
+      - name: Install project dependencies
+        run: npm ci
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
       - name: Regenerate and verify Dafny
         run: ../LemmaScript/tools/check.sh dafny
 

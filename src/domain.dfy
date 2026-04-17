@@ -625,7 +625,10 @@ function applyAssignTask(m: Model, taskId: TaskId, userId: UserId): Result<Model
         if !((userId in m.members)) then
           err(Err.NotAMember)
         else
-          ok(m.(taskData := m.taskData[taskId := i_task_val.(assignees := (i_task_val.assignees + [userId]))]))
+          if (userId in i_task_val.assignees) then
+            ok(m)
+          else
+            ok(m.(taskData := m.taskData[taskId := i_task_val.(assignees := (i_task_val.assignees + [userId]))]))
     case None =>
       err(Err.MissingTask)
   }
@@ -656,7 +659,10 @@ function applyAddTagToTask(m: Model, taskId: TaskId, tagId: TagId): Result<Model
         if !((tagId in m.tags)) then
           err(Err.MissingTag)
         else
-          ok(m.(taskData := m.taskData[taskId := i_task_val.(tags := (i_task_val.tags + [tagId]))]))
+          if (tagId in i_task_val.tags) then
+            ok(m)
+          else
+            ok(m.(taskData := m.taskData[taskId := i_task_val.(tags := (i_task_val.tags + [tagId]))]))
     case None =>
       err(Err.MissingTask)
   }
@@ -1455,9 +1461,10 @@ by method {
   {
     var tid := i_tid_keys[i_tid_idx];
     var tag := m.tags[tid];
-    if ((match excludeTag { case Some(i_) => false case None => true }) || (match excludeTag { case Some(i_value) => (i_value != tid) case None => true })) {
-      var i_t0 := eqIgnoreCase(tag.name, name);
-      if i_t0 {
+    var i_t0 := tid;
+    if ((match excludeTag { case Some(i_) => false case None => true }) || (match excludeTag { case Some(i_value) => (i_value != i_t0) case None => true })) {
+      var i_t1 := eqIgnoreCase(tag.name, name);
+      if i_t1 {
         return true;
       }
     }
@@ -1483,9 +1490,10 @@ by method {
   {
     var tid := i_tid_keys[i_tid_idx];
     var task := taskData[tid];
-    var i_t1 := without(task.tags, tagId);
-    var newTags := i_t1;
-    result := result[tid := task.(tags := newTags)];
+    var i_t2 := without(task.tags, tagId);
+    var newTags := i_t2;
+    var i_t3 := tid;
+    result := result[i_t3 := task.(tags := newTags)];
     i_tid_idx := i_tid_idx + 1;
   }
   assert result.Keys == set k | 0 <= k < |i_tid_keys| :: i_tid_keys[k];
@@ -1510,9 +1518,10 @@ by method {
   {
     var tid := i_tid_keys[i_tid_idx];
     var task := taskData[tid];
-    var i_t2 := without(task.assignees, userId);
-    var newAssignees := i_t2;
-    result := result[tid := task.(assignees := newAssignees)];
+    var i_t4 := without(task.assignees, userId);
+    var newAssignees := i_t4;
+    var i_t5 := tid;
+    result := result[i_t5 := task.(assignees := newAssignees)];
     i_tid_idx := i_tid_idx + 1;
   }
   assert result.Keys == set k | 0 <= k < |i_tid_keys| :: i_tid_keys[k];
@@ -1536,8 +1545,8 @@ by method {
   {
     var i_ := i___keys[i___idx];
     var task := m.taskData[i_];
-    var i_t3 := isPriorityTask(task);
-    if i_t3 {
+    var i_t6 := isPriorityTask(task);
+    if i_t6 {
       count := (count + 1);
       matched := matched + {i_};
     }
@@ -1564,8 +1573,8 @@ by method {
   {
     var i_ := i___keys[i___idx];
     var task := m.taskData[i_];
-    var i_t4 := isLogbookTask(task);
-    if i_t4 {
+    var i_t7 := isLogbookTask(task);
+    if i_t7 {
       count := (count + 1);
       matched := matched + {i_};
     }
@@ -1671,10 +1680,10 @@ method getAllPriorityTasks(mm: MultiModel) returns (res: seq<TaggedTask>)
     {
       var taskIdStr := i_taskIdStr_keys[i_taskIdStr_idx];
       var task := model.taskData[taskIdStr];
-      var i_t5 := isPriorityTask(task);
-      if i_t5 {
-        var i_t6 := taskIdStr;
-        result := (result + [TaggedTask(projectId, i_t6)]);
+      var i_t8 := isPriorityTask(task);
+      if i_t8 {
+        var i_t9 := taskIdStr;
+        result := (result + [TaggedTask(projectId, i_t9)]);
       }
       i_taskIdStr_idx := i_taskIdStr_idx + 1;
     }
@@ -1700,10 +1709,10 @@ method getAllLogbookTasks(mm: MultiModel) returns (res: seq<TaggedTask>)
     {
       var taskIdStr := i_taskIdStr_keys[i_taskIdStr_idx];
       var task := model.taskData[taskIdStr];
-      var i_t7 := isLogbookTask(task);
-      if i_t7 {
-        var i_t8 := taskIdStr;
-        result := (result + [TaggedTask(projectId, i_t8)]);
+      var i_t10 := isLogbookTask(task);
+      if i_t10 {
+        var i_t11 := taskIdStr;
+        result := (result + [TaggedTask(projectId, i_t11)]);
       }
       i_taskIdStr_idx := i_taskIdStr_idx + 1;
     }
@@ -1729,10 +1738,10 @@ method getAllVisibleTasks(mm: MultiModel) returns (res: seq<TaggedTask>)
     {
       var taskIdStr := i_taskIdStr_keys[i_taskIdStr_idx];
       var task := model.taskData[taskIdStr];
-      var i_t9 := isVisibleTask(task);
-      if i_t9 {
-        var i_t10 := taskIdStr;
-        result := (result + [TaggedTask(projectId, i_t10)]);
+      var i_t12 := isVisibleTask(task);
+      if i_t12 {
+        var i_t13 := taskIdStr;
+        result := (result + [TaggedTask(projectId, i_t13)]);
       }
       i_taskIdStr_idx := i_taskIdStr_idx + 1;
     }
@@ -1752,8 +1761,8 @@ method getDeletedTaskIds(m: Model) returns (res: seq<TaskId>)
     var taskIdStr := i_taskIdStr_keys[i_taskIdStr_idx];
     var task := m.taskData[taskIdStr];
     if task.deleted {
-      var i_t11 := taskIdStr;
-      result := (result + [i_t11]);
+      var i_t14 := taskIdStr;
+      result := (result + [i_t14]);
     }
     i_taskIdStr_idx := i_taskIdStr_idx + 1;
   }

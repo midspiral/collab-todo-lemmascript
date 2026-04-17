@@ -68,6 +68,14 @@ npm run dev
 
 Requires `../LemmaScript` (midspiral/LemmaScript) as a sibling project.
 
+### TypeScript typecheck
+
+```bash
+npm run typecheck
+```
+
+Also runs automatically as part of `npm run build`.
+
 ### Verify domain logic (LemmaScript → Dafny)
 
 ```bash
