@@ -2100,6 +2100,59 @@ lemma TryApplyMultiPreservesMultiInv(mm: MultiModel, action: MultiAction)
 // the direct field-update form.
 // =============================================================================
 
+// If CountInLists > 0, there exists a list containing taskId
+lemma CountPositiveImpliesExists(m: Model, taskId: int)
+  requires Inv(m)
+  requires CountInLists(m, taskId) > 0
+  ensures exists l :: l in m.tasks && taskId in m.tasks[l]
+{
+  CountPositiveImpliesExistsHelper(m.lists, m.tasks, taskId);
+}
+
+lemma CountPositiveImpliesExistsHelper(lists: seq<int>, tasks: map<int, seq<int>>, id: int)
+  requires CountInListsHelper(lists, tasks, id) > 0
+  ensures exists l :: l in tasks && id in tasks[l]
+  decreases |lists|
+{
+  if |lists| > 0 {
+    var l := lists[0];
+    var lane := if l in tasks then tasks[l] else [];
+    if id in lane {
+      assert l in tasks && id in tasks[l];
+    } else {
+      CountPositiveImpliesExistsHelper(lists[1..], tasks, id);
+    }
+  }
+}
+
+// findListForTask returns Some for non-deleted tasks (by Inv D: count == 1)
+lemma FindListForTaskIsSome(m: Model, taskId: int)
+  requires Inv(m)
+  requires taskId in m.taskData && !m.taskData[taskId].deleted
+  ensures findListForTask(m, taskId).Some?
+{
+  assert CountInLists(m, taskId) == 1;
+  CountPositiveImpliesExists(m, taskId);
+  var l :| l in m.tasks && taskId in m.tasks[l];
+  assert l in m.lists;
+  FindListForTaskFinds(m, taskId, l);
+}
+
+// taskTitleExistsInList is false when checking the task's own title (by Inv N)
+lemma TaskTitleExistsFromFalseInv(lane: seq<TaskId>, taskData: map<int, Task>,
+    title: string, excludeId: TaskId, i: int)
+  requires 0 <= i <= |lane|
+  // No non-deleted task in lane (other than excludeId) has eqIgnoreCase title
+  requires forall j :: i <= j < |lane| && lane[j] != excludeId && lane[j] in taskData
+    && !taskData[lane[j]].deleted ==> !eqIgnoreCase(taskData[lane[j]].title, title)
+  ensures !taskTitleExistsFrom(lane, taskData, title, Some(excludeId), i)
+  decreases |lane| - i
+{
+  if i < |lane| {
+    TaskTitleExistsFromFalseInv(lane, taskData, title, excludeId, i + 1);
+  }
+}
+
 lemma UnfoldCompleteTask(m: Model, taskId: TaskId)
   requires taskId in m.taskData && !m.taskData[taskId].deleted
   ensures apply(m, CompleteTask(taskId)) == true_(m.(taskData := m.taskData[taskId := m.taskData[taskId].(completed := true)]))
@@ -2481,13 +2534,27 @@ lemma {:timeLimit 300} NoOpImpliesUnchanged(m: Model, a: Action)
     return;
   }
   if NoOpEditTaskSameContent(m, a) {
-    // Need to show apply succeeds with same title.
-    // apply checks findListForTask then taskTitleExistsInList.
-    // Both are function-by-method. Use the fact that apply(m, a) == true_(m) (precondition)
-    // to know it succeeded, then show the result equals m.
-    // The precondition already tells us apply returned true_(something).
-    // Since title/notes are the same, the "something" must equal m.
-    assume {:axiom} apply(m, a) == true_(m); // TODO: unfold EditTask with title uniqueness
+    var taskId := a.taskId;
+    var t := m.taskData[taskId];
+    // findListForTask returns Some (Inv D: non-deleted task is in exactly one list)
+    FindListForTaskIsSome(m, taskId);
+    var listId := findListForTask(m, taskId).value;
+    // taskTitleExistsInList is false (Inv N: title unique within list, excluding self)
+    FindListForTaskSoundHelper(m.lists, m.tasks, taskId, 0);
+    assert taskId in m.tasks[listId];
+    assert listId in m.tasks;
+    // By Inv N, no other non-deleted task in this list has the same title
+    forall j | 0 <= j < |m.tasks[listId]| && m.tasks[listId][j] != taskId
+      && m.tasks[listId][j] in m.taskData && !m.taskData[m.tasks[listId][j]].deleted
+      ensures !eqIgnoreCase(m.taskData[m.tasks[listId][j]].title, a.title)
+    {
+      // m.tasks[listId][j] and taskId are both in the list, both non-deleted, different
+      // By Inv N: !eqIgnoreCase(their titles). Since a.title == taskData[taskId].title, done.
+    }
+    TaskTitleExistsFromFalseInv(m.tasks[listId], m.taskData, a.title, taskId, 0);
+    UnfoldEditTask(m, taskId, a.title, a.notes);
+    assert t.(title := a.title, notes := a.notes) == t;
+    assert m.taskData[taskId := t] == m.taskData;
     return;
   }
   if NoOpSetDueDateSame(m, a) {
@@ -2535,7 +2602,42 @@ lemma {:timeLimit 300} NoOpImpliesUnchanged(m: Model, a: Action)
     var t := m.taskData[a.taskId]; assert t.(tags := without(t.tags, a.tagId)) == t;
     assert m.taskData[a.taskId := t] == m.taskData; return;
   }
-  // MoveList/MoveTask same position — complex, axioms for now
-  if NoOpMoveListSamePosition(m, a) { assume {:axiom} apply(m, a) == true_(m); return; }
-  assume {:axiom} apply(m, a) == true_(m); // NoOpMoveTaskSamePosition
+  if NoOpMoveListSamePosition(m, a) {
+    // MoveList: apply returns m.(lists := insertAt(without(lists, listId), clamped, listId))
+    // The NoOp predicate asserts this equals m.lists.
+    var listId := a.listId;
+    var pos := posFromListPlace(m.lists, a.listPlace);
+    var listsWithout := without(m.lists, listId);
+    var clamped := MathMin(pos, |listsWithout|);
+    assert insertAt(listsWithout, clamped, listId) == m.lists;
+    assert m.(lists := m.lists) == m;
+    return;
+  }
+  // MoveTask same position
+  assert NoOpMoveTaskSamePosition(m, a);
+  {
+    var taskId := a.taskId;
+    var toList := a.toList;
+    assert taskId in m.taskData && !m.taskData[taskId].deleted;
+    assert toList in m.lists && toList in m.tasks;
+    var cleaned := removeTaskFromAllLists(m.lists, m.tasks, taskId);
+    var targetLane := if toList in cleaned then cleaned[toList] else [];
+    var pos := posFromPlace(targetLane, a.taskPlace);
+    var clamped := MathMin(pos, |targetLane|);
+    // From predicate: result equals original
+    assert cleaned[toList := insertAt(targetLane, clamped, taskId)] == m.tasks;
+    // So apply returns m.(tasks := m.tasks) == m
+    // But apply also checks taskTitleExistsInList — need to show it's false
+    // The title is unchanged, task is non-deleted, in the list → by Inv N, no duplicate
+    FindListForTaskIsSome(m, taskId);
+    var listId := findListForTask(m, taskId).value;
+    FindListForTaskSoundHelper(m.lists, m.tasks, taskId, 0);
+    assert taskId in m.tasks[listId];
+    forall j | 0 <= j < |m.tasks[toList]| && m.tasks[toList][j] != taskId
+      && m.tasks[toList][j] in m.taskData && !m.taskData[m.tasks[toList][j]].deleted
+      ensures !eqIgnoreCase(m.taskData[m.tasks[toList][j]].title, m.taskData[taskId].title)
+    {}
+    TaskTitleExistsFromFalseInv(m.tasks[toList], m.taskData, m.taskData[taskId].title, taskId, 0);
+    assert m.(tasks := m.tasks) == m;
+  }
 }
