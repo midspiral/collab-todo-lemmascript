@@ -969,6 +969,28 @@ lemma DeleteListPreservesCounts(m: Model, listId: int, lane: seq<int>,
   }
 }
 
+// Helper: C — tasks in remaining lanes exist in newTaskData
+lemma DeleteListPreservesC(m: Model, listId: int, lane: seq<int>,
+    newTasks: map<int, seq<int>>, newTaskData: map<int, Task>)
+  requires Inv(m) && listId in m.lists && listId in m.tasks
+  requires lane == m.tasks[listId]
+  requires newTasks == (map k | k in m.tasks && k != listId :: m.tasks[k])
+  requires newTaskData == removeKeysFromRecord(m.taskData, lane, 0)
+  ensures forall l, tid :: (l in newTasks && tid in newTasks[l]) ==> tid in newTaskData
+{
+  forall l, tid | l in newTasks && tid in newTasks[l]
+    ensures tid in newTaskData
+  {
+    assert l != listId && l in m.tasks;
+    assert tid in m.tasks[l] && tid in m.taskData;
+    if tid in lane {
+      CountAtLeastTwo(m, tid, listId, l);
+      assert false;
+    }
+    RemoveKeysPreservesOther(m.taskData, lane, tid, 0);
+  }
+}
+
 lemma {:timeLimit 60} DeleteListPreservesInv(m: Model, listId: int, m2: Model)
   requires Inv(m)
   requires apply(m, DeleteList(listId)) == true_(m2)
@@ -977,54 +999,41 @@ lemma {:timeLimit 60} DeleteListPreservesInv(m: Model, listId: int, m2: Model)
   if !(listId in m.lists) {
     assert m2 == m;
   } else {
+    // Unfold apply to connect m2 to concrete field updates
+    UnfoldDeleteList(m, listId);
     var lane := if listId in m.tasks then m.tasks[listId] else [];
     var newTaskData := removeKeysFromRecord(m.taskData, lane, 0);
     var newLists := without(m.lists, listId);
     var newListNames := (map k | k in m.listNames && k != listId :: m.listNames[k]);
     var newTasks := (map k | k in m.tasks && k != listId :: m.tasks[k]);
+    assert m2 == m.(lists := newLists, listNames := newListNames, tasks := newTasks, taskData := newTaskData);
 
     // A: NoDup
     WithoutPreservesNoDup(m.lists, listId);
 
-    // B: domains match
-    // newLists = without(m.lists, listId): contains l iff l in m.lists && l != listId
-    // newListNames = {k in m.listNames | k != listId}: same as {k in m.lists | k != listId} by Inv B
-    // newTasks = {k in m.tasks | k != listId}: same by Inv B
+    // B: domains — explicit connection
     WithoutRemoves(m.lists, listId);
     WithoutSubset(m.lists, listId);
-    forall l ensures l in newLists <==> (l in m.lists && l != listId)
+    assert forall l :: l in newLists ==> l in m.lists && l != listId;
+    assert forall l :: l in m.lists && l != listId ==> l in newLists by {
+      forall l | l in m.lists && l != listId ensures l in newLists
+      { WithoutKeeps(m.lists, listId, l); }
+    }
+    forall l ensures l in newListNames <==> l in newLists
     {
-      if l in m.lists && l != listId { WithoutKeeps(m.lists, listId, l); }
+      // newListNames has l iff l in m.listNames && l != listId
+      // By Inv B: l in m.listNames <==> l in m.lists
+      // newLists has l iff l in m.lists && l != listId (proven above)
+    }
+    forall l ensures l in newTasks <==> l in newLists
+    {
+      // same reasoning with m.tasks
     }
 
-    // C: tasks in remaining lanes exist in newTaskData
-    forall l, tid | l in newTasks && tid in newTasks[l]
-      ensures tid in newTaskData
-    {
-      assert l != listId && l in m.tasks;
-      assert tid in m.tasks[l] && tid in m.taskData;
-      // tid not in deleted lane (otherwise count >= 2, contradicting Inv)
-      if tid in lane {
-        CountAtLeastTwo(m, tid, listId, l);
-        assert false;
-      }
-      RemoveKeysPreservesOther(m.taskData, lane, tid, 0);
-    }
-
-    // D/D': delegated to helper
+    // C, D/D', F/H/L/N: helpers
+    DeleteListPreservesC(m, listId, lane, newTasks, newTaskData);
     DeleteListPreservesCounts(m, listId, lane, newLists, newTasks, newTaskData);
-
-    // E: NoDup in each lane (lanes unchanged)
-    // G: allocators fresh
-    WithoutSubset(m.lists, listId);
-
-    // F, H, L, N: delegated to helper
     DeleteListTaskDataProps(m, listId, lane, newTaskData, newTasks);
-
-    // I-P: mode, owner, members unchanged
-    assert m2.mode == m.mode;
-    assert m2.owner == m.owner;
-    assert m2.members == m.members;
   }
 }
 
@@ -2550,6 +2559,17 @@ lemma UnfoldMoveTaskTitleCheck(m: Model, taskId: TaskId, toList: ListId, taskPla
   requires toList in m.lists
   requires apply(m, MoveTask(taskId, toList, taskPlace)).true_?
   ensures !taskTitleExistsInList(m, toList, m.taskData[taskId].title, Some(taskId))
+{}
+
+lemma UnfoldDeleteList(m: Model, listId: ListId)
+  requires listId in m.lists
+  ensures apply(m, DeleteList(listId)).true_?
+  ensures var lane := if listId in m.tasks then m.tasks[listId] else [];
+    apply(m, DeleteList(listId)).value ==
+      m.(lists := without(m.lists, listId),
+         listNames := (map k | k in m.listNames && k != listId :: m.listNames[k]),
+         tasks := (map k | k in m.tasks && k != listId :: m.tasks[k]),
+         taskData := removeKeysFromRecord(m.taskData, lane, 0))
 {}
 
 lemma UnfoldCompleteTask(m: Model, taskId: TaskId)
