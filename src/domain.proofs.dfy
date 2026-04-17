@@ -588,6 +588,20 @@ lemma CountZeroWhenAbsent(lists: seq<int>, tasks: map<int, seq<int>>, tid: int, 
   }
 }
 
+// removeKeysFromRecord domain: result contains exactly keys not in removal list
+lemma RemoveKeysDomain(rec: map<int, Task>, keys: seq<int>, tid: int, i: int)
+  requires 0 <= i <= |keys|
+  ensures tid in removeKeysFromRecord(rec, keys, i) <==> (tid in rec && tid !in keys[i..])
+  decreases |keys| - i
+{
+  if i < |keys| {
+    var rec' := removeKeyFromRecord(rec, keys[i]);
+    RemoveKeysDomain(rec', keys, tid, i + 1);
+    // rec' has everything except keys[i]
+    assert tid in rec' <==> (tid in rec && tid != keys[i]);
+  }
+}
+
 lemma RemoveKeysPreservesOther(rec: map<int, Task>, keys: seq<int>, tid: int, i: int)
   requires 0 <= i <= |keys|
   requires tid in rec
@@ -877,12 +891,66 @@ lemma DeleteListPreservesInv(m: Model, listId: int, m2: Model)
   if !(listId in m.lists) {
     assert m2 == m;
   } else {
-    // Partial proof structure — key insights proven, remaining conjuncts need more hints
-    // A: without preserves NoDup ✓
-    // B: map comprehension preserves domain ✓
-    // C: tasks in other lanes not removed (by CountAtLeastTwo contradiction) ✓
-    // D/D'/E/F/G/H/I-P: need per-conjunct reasoning about removeKeysFromRecord
-    assume {:axiom} Inv(m2);
+    var lane := if listId in m.tasks then m.tasks[listId] else [];
+    var newTaskData := removeKeysFromRecord(m.taskData, lane, 0);
+    var newLists := without(m.lists, listId);
+    var newListNames := (map k | k in m.listNames && k != listId :: m.listNames[k]);
+    var newTasks := (map k | k in m.tasks && k != listId :: m.tasks[k]);
+
+    // A: NoDup
+    WithoutPreservesNoDup(m.lists, listId);
+
+    // B: domains match (without removes listId from lists; map comprehension removes from maps)
+    forall l ensures l in newListNames <==> l in newLists
+    { WithoutKeeps(m.lists, listId, l); }
+    forall l ensures l in newTasks <==> l in newLists
+    { WithoutKeeps(m.lists, listId, l); }
+
+    // C: tasks in remaining lanes exist in newTaskData
+    forall l, tid | l in newTasks && tid in newTasks[l]
+      ensures tid in newTaskData
+    {
+      assert l != listId && l in m.tasks;
+      assert tid in m.tasks[l] && tid in m.taskData;
+      // tid not in deleted lane (otherwise count >= 2, contradicting Inv)
+      if tid in lane {
+        CountAtLeastTwo(m, tid, listId, l);
+        assert false;
+      }
+      RemoveKeysPreservesOther(m.taskData, lane, tid, 0);
+    }
+
+    // D/D': counts for remaining tasks
+    // Tasks in the deleted lane are removed from taskData entirely.
+    // Tasks NOT in the deleted lane have same count (lane removed but wasn't contributing).
+    forall tid | tid in newTaskData && !newTaskData[tid].deleted
+      ensures CountInListsHelper(newLists, newTasks, tid) == 1
+    {
+      RemoveKeysDomain(m.taskData, lane, tid, 0);
+      assert tid in m.taskData && tid !in lane;
+      RemoveKeysPreservesOther(m.taskData, lane, tid, 0);
+      assert newTaskData[tid] == m.taskData[tid];
+      CountRemoveOne(m.lists, m.tasks, tid, listId);
+      CountSameMembership(newLists, newTasks, m.tasks, tid);
+    }
+
+    forall tid | tid in newTaskData && newTaskData[tid].deleted
+      ensures CountInListsHelper(newLists, newTasks, tid) == 0
+    {
+      RemoveKeysDomain(m.taskData, lane, tid, 0);
+      assert tid in m.taskData && tid !in lane;
+      RemoveKeysPreservesOther(m.taskData, lane, tid, 0);
+      assert newTaskData[tid] == m.taskData[tid];
+      CountRemoveOne(m.lists, m.tasks, tid, listId);
+      CountSameMembership(newLists, newTasks, m.tasks, tid);
+    }
+
+    // E: NoDup in each lane (lanes unchanged)
+    // G: allocators fresh — without elements are subset of original
+    forall lid | lid in newLists ensures lid < m2.nextListId
+    {
+      WithoutKeeps(m.lists, listId, lid);
+    }
   }
 }
 
