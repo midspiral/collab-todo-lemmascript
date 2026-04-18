@@ -281,7 +281,7 @@ function taskTitleExistsFrom(lane: seq<TaskId>, taskData: map<int, Task>, title:
 
 function taskTitleExistsInList(m: Model, listId: ListId, title: string, excludeTask: Option<TaskId>): bool
 {
-  ((listId in m.tasks) && var i_lane_val := m.tasks[listId]; taskTitleExistsFrom(i_lane_val, m.taskData, title, excludeTask, 0))
+  ((listId in m.tasks) && (var i_lane_val := m.tasks[listId]; taskTitleExistsFrom(i_lane_val, m.taskData, title, excludeTask, 0)))
 }
 
 function findListForTaskFrom(lists: seq<ListId>, tasks: map<int, seq<TaskId>>, taskId: TaskId, i: int): Option<ListId>
@@ -391,7 +391,7 @@ function applyDeleteList(m: Model, listId: ListId): Result<Model, Err>
   if !((listId in m.lists)) then
     ok(m)
   else
-    var lane := if (listId in m.tasks) then var i_value := m.tasks[listId]; i_value else [];
+    var lane := (if (listId in m.tasks) then (var i_value := m.tasks[listId]; i_value) else []);
     var newTaskData := removeKeysFromRecord(m.taskData, lane, 0);
     var newLists := without(m.lists, listId);
     var newListNames := (map k | k in m.listNames && k != listId :: m.listNames[k]);
@@ -423,7 +423,7 @@ function applyAddTask(m: Model, listId: ListId, title: string): Result<Model, Er
     else
       var id := m.nextTaskId;
       var task := Task(title, "", false, false, None, [], [], false, None, None);
-      var lane := if (listId in m.tasks) then var i_value := m.tasks[listId]; i_value else [];
+      var lane := (if (listId in m.tasks) then (var i_value := m.tasks[listId]; i_value) else []);
       ok(m.(tasks := m.tasks[listId := (lane + [id])], taskData := m.taskData[id := task], nextTaskId := (m.nextTaskId + 1)))
 }
 
@@ -472,11 +472,11 @@ function applyRestoreTask(m: Model, taskId: TaskId): Result<Model, Err>
       if (|m.lists| == 0) then
         err(Err.MissingList)
       else
-        var targetList := (match i_task_val.deletedFromList { case Some(i_task_deletedFromList_val) => if (i_task_deletedFromList_val in m.lists) then i_task_deletedFromList_val else m.lists[0] case None => m.lists[0] });
+        var targetList := (match i_task_val.deletedFromList { case Some(i_task_deletedFromList_val) => (if (i_task_deletedFromList_val in m.lists) then i_task_deletedFromList_val else m.lists[0]) case None => m.lists[0] });
         if taskTitleExistsInList(m, targetList, i_task_val.title, None) then
           err(Err.DuplicateTask)
         else
-          var lane := if (targetList in m.tasks) then var i_value := m.tasks[targetList]; i_value else [];
+          var lane := (if (targetList in m.tasks) then (var i_value := m.tasks[targetList]; i_value) else []);
           ok(m.(tasks := m.tasks[targetList := (lane + [taskId])], taskData := m.taskData[taskId := i_task_val.(deleted := false, deletedBy := None, deletedFromList := None)]))
   else
     err(Err.MissingTask)
@@ -496,7 +496,7 @@ function applyMoveTask(m: Model, taskId: TaskId, toList: ListId, taskPlace: Plac
           err(Err.DuplicateTask)
         else
           var cleaned := removeTaskFromAllLists(m.lists, m.tasks, taskId);
-          var targetLane := if (toList in cleaned) then var i_value := cleaned[toList]; i_value else [];
+          var targetLane := (if (toList in cleaned) then (var i_value := cleaned[toList]; i_value) else []);
           var pos := posFromPlace(targetLane, taskPlace);
           if (pos < 0) then
             err(Err.BadAnchor)
@@ -1057,9 +1057,9 @@ function copyTaskToModel(srcTask: Task, dstModel: Model, dstList: ListId): Model
     dstModel
   else
     var newTid := (r.value.nextTaskId - 1);
-    var m1 := if (srcTask.notes != "") then applyOk(r.value, EditTask(newTid, srcTask.title, srcTask.notes)) else r.value;
-    var m2 := if srcTask.starred then applyOk(m1, StarTask(newTid)) else m1;
-    var m3 := if srcTask.completed then applyOk(m2, CompleteTask(newTid)) else m2;
+    var m1 := (if (srcTask.notes != "") then applyOk(r.value, EditTask(newTid, srcTask.title, srcTask.notes)) else r.value);
+    var m2 := (if srcTask.starred then applyOk(m1, StarTask(newTid)) else m1);
+    var m3 := (if srcTask.completed then applyOk(m2, CompleteTask(newTid)) else m2);
     var m4 := applyOk(m3, SetDueDate(newTid, srcTask.dueDate));
     m4
 }
@@ -1100,7 +1100,7 @@ function tryMoveListTo(mm: MultiModel, srcProjectId: ProjectId, dstProjectId: Pr
             mm
           else
             var newListId := (r1.value.nextListId - 1);
-            var lane := if (listId in i_src_val.tasks) then var i_value := i_src_val.tasks[listId]; i_value else [];
+            var lane := (if (listId in i_src_val.tasks) then (var i_value := i_src_val.tasks[listId]; i_value) else []);
             var dstModel := copyTasksFromLane(lane, i_src_val.taskData, r1.value, newListId, 0);
             var r2 := apply(i_src_val, DeleteList(listId));
             if !(r2.true_?) then
@@ -1202,7 +1202,7 @@ function baseVersionsForAction(client: MultiClientState, action: MultiAction): m
 
 function clientLocalDispatch(client: MultiClientState, action: MultiAction): MultiClientState
 {
-  var newPresent := if allProjectsLoaded(client.present, action) then tryApplyMulti(client.present, action) else client.present;
+  var newPresent := (if allProjectsLoaded(client.present, action) then tryApplyMulti(client.present, action) else client.present);
   MultiClientState(client.baseVersions, newPresent, (client.pending + [action]))
 }
 
@@ -1216,13 +1216,13 @@ function mergeAndReapply(client: MultiClientState, newVersions: map<string, int>
 
 function clientAcceptReply(client: MultiClientState, newVersions: map<string, int>, newModels: map<string, Model>): MultiClientState
 {
-  var rest := if (|client.pending| > 0) then client.pending[1..] else [];
+  var rest := (if (|client.pending| > 0) then client.pending[1..] else []);
   mergeAndReapply(client, newVersions, newModels, rest)
 }
 
 function clientRejectReply(client: MultiClientState, freshVersions: map<string, int>, freshModels: map<string, Model>): MultiClientState
 {
-  var rest := if (|client.pending| > 0) then client.pending[1..] else [];
+  var rest := (if (|client.pending| > 0) then client.pending[1..] else []);
   mergeAndReapply(client, freshVersions, freshModels, rest)
 }
 
