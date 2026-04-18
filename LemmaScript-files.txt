@@ -1,1 +1,1 @@
-src/domain.ts
+src/domain.ts 50

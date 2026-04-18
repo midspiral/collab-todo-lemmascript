@@ -207,8 +207,8 @@ function posFromPlace(lane: seq<TaskId>, p: Place): int
         -1
       else
         idx
-    case _ =>
-      var idx := SeqIndexOf(lane, p.anchor);
+    case After(i_p_anchor) =>
+      var idx := SeqIndexOf(lane, i_p_anchor);
       if (idx < 0) then
         -1
       else
@@ -227,8 +227,8 @@ function posFromListPlace(lists: seq<ListId>, p: ListPlace): int
         -1
       else
         idx
-    case _ =>
-      var idx := SeqIndexOf(lists, p.anchor);
+    case ListAfter(i_p_anchor) =>
+      var idx := SeqIndexOf(lists, i_p_anchor);
       if (idx < 0) then
         -1
       else
@@ -763,8 +763,8 @@ function degradeIfAnchorMoved(movedId: TaskId, p: Place): Place
         Place.AtEnd
       else
         p
-    case _ =>
-      if (p.anchor == movedId) then
+    case After(i_p_anchor) =>
+      if (i_p_anchor == movedId) then
         Place.AtEnd
       else
         p
