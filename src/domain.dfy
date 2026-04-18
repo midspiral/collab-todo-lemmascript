@@ -908,9 +908,9 @@ function getTask(m: Model, taskId: TaskId): Option<Task>
   if (taskId in m.taskData) then
     var i_t_val := m.taskData[taskId];
     if i_t_val.deleted then
-      None
+      Option.None
     else
-      Some(i_t_val)
+      Option.Some(i_t_val)
   else
     None
 }
