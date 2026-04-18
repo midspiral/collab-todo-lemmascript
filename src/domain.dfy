@@ -568,7 +568,7 @@ function applySetDueDate(m: Model, taskId: TaskId, dueDate: Option<DateVal>): Re
           if !(validDate(i_dueDate_val)) then
             err(Err.InvalidDate)
           else
-            ok(m.(taskData := m.taskData[taskId := i_task_val.(dueDate := Some(i_dueDate_val))]))
+            ok(m.(taskData := m.taskData[taskId := i_task_val.(dueDate := dueDate)]))
         case None =>
           ok(m.(taskData := m.taskData[taskId := i_task_val.(dueDate := dueDate)]))
       }
