@@ -1619,7 +1619,7 @@ method getAllVisibleTasks(mm: MultiModel) returns (res: seq<TaggedTask>)
 
 method getDeletedTaskIds(m: Model) returns (res: seq<TaskId>)
 {
-  var result: seq<int> := [];
+  var result: seq<TaskId> := [];
   var i_taskIdStr_keys := SetToSeq(m.taskData.Keys);
   var i_taskIdStr_idx := 0;
   while i_taskIdStr_idx < |i_taskIdStr_keys|
