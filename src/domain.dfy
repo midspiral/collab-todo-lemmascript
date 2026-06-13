@@ -22,6 +22,13 @@ method SetToSeq<T>(s: set<T>) returns (res: seq<T>)
   }
 }
 
+function JSRem(a: int, b: int): int
+  requires b != 0
+{
+  var r := (if a < 0 then -a else a) % (if b < 0 then -b else b);
+  if a < 0 then -r else r
+}
+
 function SeqIndexOf<T(==)>(s: seq<T>, x: T): int
   ensures -1 <= SeqIndexOf(s, x) < |s|
   ensures SeqIndexOf(s, x) >= 0 ==> s[SeqIndexOf(s, x)] == x
@@ -107,7 +114,7 @@ datatype StepResult = StepResult(state: EffectState, command: EffectCommand)
 
 function isLeapYear(year: int): bool
 {
-  ((((year % 4) == 0) && ((year % 100) != 0)) || ((year % 400) == 0))
+  (((JSRem(year, 4) == 0) && (JSRem(year, 100) != 0)) || (JSRem(year, 400) == 0))
 }
 
 function daysInMonth(month: int, year: int): int
