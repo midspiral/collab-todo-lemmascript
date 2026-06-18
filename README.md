@@ -1,5 +1,8 @@
 # Collab Todo (LemmaScript)
 
+[![LemmaScript: verified](https://img.shields.io/badge/LemmaScript-verified-brightgreen)](https://github.com/midspiral/collab-todo-lemmascript/actions/workflows/lemmascript.yml)
+
+
 Collaborative task management app with a formally verified domain model.
 
 The domain logic in `src/domain.ts` is written in TypeScript with [LemmaScript](https://github.com/midspiral/LemmaScript) annotations, verified through Dafny (131 lemmas, 0 errors). The same file is imported directly by the React UI, the React hooks, and the Supabase edge functions — no compilation step, no adapter layer.
