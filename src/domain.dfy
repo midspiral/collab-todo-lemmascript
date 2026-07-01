@@ -2,6 +2,8 @@
 
 datatype Option<T> = None | Some(value: T)
 
+type Unknown(==, 0)
+
 method SetToSeq<T>(s: set<T>) returns (res: seq<T>)
   ensures forall x :: x in s <==> x in res
   ensures |res| == |s|
@@ -884,7 +886,7 @@ function rebase(remote: Action, local: Action): Action
   }
 }
 
-function candidates(i_m: int, a: Action): seq<Action>
+function candidates(i_m: Unknown, a: Action): seq<Action>
 {
   if (a.MoveTask? && (!a.taskPlace.AtEnd?)) then
     [a, a.(taskPlace := Place.AtEnd)]
