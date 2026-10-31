@@ -534,7 +534,7 @@ function applyRemoveMember(m: Model, userId: UserId): Result<Model, Err> {
   return ok({ ...m, members: without(m.members, userId), taskData: newTaskData })
 }
 
-//@ __mapFromArray
+// __mapFromArray
 export function apply(m: Model, a: Action): Result<Model, Err> {
   switch (a.kind) {
   case 'NoOp': return applyNoOp(m)
@@ -1131,7 +1131,7 @@ function stepTick(es: EffectState): StepResult {
 // Effect Machine — Main Step Function
 // ═══════════════════════════════════════════════════════════════
 
-//@ __mapFromArray
+// __mapFromArray
 export function step(es: EffectState, event: EffectEvent): StepResult {
   switch (event.kind) {
   case 'UserAction': return stepUserAction(es, event.action)
