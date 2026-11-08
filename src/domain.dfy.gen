@@ -1387,8 +1387,12 @@ by method {
   {
     var tid := i_tid_keys[i_tid_idx];
     var tag := m.tags[tid];
-    var i_t0 := tid;
-    if ((match excludeTag { case Some(i_) => false case None => true }) || (match excludeTag { case Some(i_value) => (i_value != i_t0) case None => true })) {
+    var i_branch0 := (match excludeTag { case Some(i_) => false case None => true });
+    if !(i_branch0) {
+      var i_t0 := tid;
+      i_branch0 := (match excludeTag { case Some(i_value) => (i_value != i_t0) case None => true });
+    }
+    if i_branch0 {
       var i_t1 := eqIgnoreCase(tag.name, name);
       if i_t1 {
         return true;
