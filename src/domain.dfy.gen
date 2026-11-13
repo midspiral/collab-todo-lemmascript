@@ -1376,8 +1376,11 @@ const INITIAL_OWNER: string := "__initial__"
 
 const MAX_RETRIES: int := 5
 
+function tagNameExists_fun_spec(m: Model, name: string, excludeTag: Option<TagId>): bool
+
 function tagNameExists(m: Model, name: string, excludeTag: Option<TagId>): bool
 {
+  tagNameExists_fun_spec(m, name, excludeTag)
 }
 by method {
   var i_tid_keys := SetToSeq(m.tags.Keys);
@@ -1403,8 +1406,11 @@ by method {
   return false;
 }
 
+function removeTagFromAllTasks_fun_spec(taskData: map<int, Task>, tagId: TagId): map<int, Task>
+
 function removeTagFromAllTasks(taskData: map<int, Task>, tagId: TagId): map<int, Task>
 {
+  removeTagFromAllTasks_fun_spec(taskData, tagId)
 }
 by method {
   var result: map<int, Task> := map[];
@@ -1424,8 +1430,11 @@ by method {
   return result;
 }
 
+function clearAssigneeFromAllTasks_fun_spec(taskData: map<int, Task>, userId: UserId): map<int, Task>
+
 function clearAssigneeFromAllTasks(taskData: map<int, Task>, userId: UserId): map<int, Task>
 {
+  clearAssigneeFromAllTasks_fun_spec(taskData, userId)
 }
 by method {
   var result: map<int, Task> := map[];
@@ -1445,8 +1454,11 @@ by method {
   return result;
 }
 
+function countPriorityTasks_fun_spec(m: Model): int
+
 function countPriorityTasks(m: Model): int
 {
+  countPriorityTasks_fun_spec(m)
 }
 by method {
   var count := 0;
@@ -1466,8 +1478,11 @@ by method {
   return count;
 }
 
+function countLogbookTasks_fun_spec(m: Model): int
+
 function countLogbookTasks(m: Model): int
 {
+  countLogbookTasks_fun_spec(m)
 }
 by method {
   var count := 0;
@@ -1487,8 +1502,11 @@ by method {
   return count;
 }
 
+function mergeVersions_fun_spec(base: map<string, int>, updates: map<string, int>): map<string, int>
+
 function mergeVersions(base: map<string, int>, updates: map<string, int>): map<string, int>
 {
+  mergeVersions_fun_spec(base, updates)
 }
 by method {
   var result: map<string, int> := map[];
@@ -1515,8 +1533,11 @@ by method {
   return result;
 }
 
+function mergeModels_fun_spec(base: map<string, Model>, updates: map<string, Model>): map<string, Model>
+
 function mergeModels(base: map<string, Model>, updates: map<string, Model>): map<string, Model>
 {
+  mergeModels_fun_spec(base, updates)
 }
 by method {
   var result: map<string, Model> := map[];

@@ -1376,9 +1376,14 @@ const INITIAL_OWNER: string := "__initial__"
 
 const MAX_RETRIES: int := 5
 
-function tagNameExists(m: Model, name: string, excludeTag: Option<TagId>): bool
+function tagNameExists_fun_spec(m: Model, name: string, excludeTag: Option<TagId>): bool
 {
   exists tid :: tid in m.tags && (match excludeTag { case None => true case Some(v) => v != tid }) && eqIgnoreCase(m.tags[tid].name, name)
+}
+
+function tagNameExists(m: Model, name: string, excludeTag: Option<TagId>): bool
+{
+  tagNameExists_fun_spec(m, name, excludeTag)
 }
 by method {
   var i_tid_keys := SetToSeq(m.tags.Keys);
@@ -1407,9 +1412,14 @@ by method {
   return false;
 }
 
-function removeTagFromAllTasks(taskData: map<int, Task>, tagId: TagId): map<int, Task>
+function removeTagFromAllTasks_fun_spec(taskData: map<int, Task>, tagId: TagId): map<int, Task>
 {
   map tid | tid in taskData :: taskData[tid].(tags := without(taskData[tid].tags, tagId))
+}
+
+function removeTagFromAllTasks(taskData: map<int, Task>, tagId: TagId): map<int, Task>
+{
+  removeTagFromAllTasks_fun_spec(taskData, tagId)
 }
 by method {
   var result: map<int, Task> := map[];
@@ -1435,9 +1445,14 @@ by method {
   return result;
 }
 
-function clearAssigneeFromAllTasks(taskData: map<int, Task>, userId: UserId): map<int, Task>
+function clearAssigneeFromAllTasks_fun_spec(taskData: map<int, Task>, userId: UserId): map<int, Task>
 {
   map tid | tid in taskData :: taskData[tid].(assignees := without(taskData[tid].assignees, userId))
+}
+
+function clearAssigneeFromAllTasks(taskData: map<int, Task>, userId: UserId): map<int, Task>
+{
+  clearAssigneeFromAllTasks_fun_spec(taskData, userId)
 }
 by method {
   var result: map<int, Task> := map[];
@@ -1463,9 +1478,14 @@ by method {
   return result;
 }
 
-function countPriorityTasks(m: Model): int
+function countPriorityTasks_fun_spec(m: Model): int
 {
   |set tid | tid in m.taskData && isPriorityTask(m.taskData[tid]) :: tid|
+}
+
+function countPriorityTasks(m: Model): int
+{
+  countPriorityTasks_fun_spec(m)
 }
 by method {
   var count := 0;
@@ -1491,9 +1511,14 @@ by method {
   return count;
 }
 
-function countLogbookTasks(m: Model): int
+function countLogbookTasks_fun_spec(m: Model): int
 {
   |set tid | tid in m.taskData && isLogbookTask(m.taskData[tid]) :: tid|
+}
+
+function countLogbookTasks(m: Model): int
+{
+  countLogbookTasks_fun_spec(m)
 }
 by method {
   var count := 0;
@@ -1519,9 +1544,14 @@ by method {
   return count;
 }
 
-function mergeVersions(base: map<string, int>, updates: map<string, int>): map<string, int>
+function mergeVersions_fun_spec(base: map<string, int>, updates: map<string, int>): map<string, int>
 {
   map pid | pid in base.Keys + updates.Keys :: if pid in updates then updates[pid] else base[pid]
+}
+
+function mergeVersions(base: map<string, int>, updates: map<string, int>): map<string, int>
+{
+  mergeVersions_fun_spec(base, updates)
 }
 by method {
   var result: map<string, int> := map[];
@@ -1558,9 +1588,14 @@ by method {
   return result;
 }
 
-function mergeModels(base: map<string, Model>, updates: map<string, Model>): map<string, Model>
+function mergeModels_fun_spec(base: map<string, Model>, updates: map<string, Model>): map<string, Model>
 {
   map pid | pid in base.Keys + updates.Keys :: if pid in updates then updates[pid] else base[pid]
+}
+
+function mergeModels(base: map<string, Model>, updates: map<string, Model>): map<string, Model>
+{
+  mergeModels_fun_spec(base, updates)
 }
 by method {
   var result: map<string, Model> := map[];
