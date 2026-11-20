@@ -51,16 +51,24 @@ function SeqIndexOfFrom<T(==)>(s: seq<T>, x: T, from: nat): int
   else SeqIndexOfFrom(s, x, from + 1)
 }
 
-function StringToLower(s: string): string
-  ensures |StringToLower(s)| == |s|
+predicate StringIsAscii(s: string)
+{
+  forall i :: 0 <= i < |s| ==> (s[i] as int) < 128
+}
+
+function AsciiToLower(s: string): string
+  ensures |AsciiToLower(s)| == |s|
   decreases |s|
 {
   if |s| == 0 then ""
   else
     var c := s[0];
     var lower := if 'A' <= c <= 'Z' then (c - 'A' + 'a') as char else c;
-    [lower] + StringToLower(s[1..])
+    [lower] + AsciiToLower(s[1..])
 }
+
+function {:axiom} StringToLower(s: string): string
+  ensures StringIsAscii(s) ==> StringToLower(s) == AsciiToLower(s)
 
 function MathMin(a: int, b: int): int { if a <= b then a else b }
 
