@@ -262,7 +262,7 @@ function listNameExistsFrom(lists: seq<ListId>, listNames: map<int, string>, nam
     false
   else
     var lid := lists[i];
-    if ((match excludeList { case Some(i_) => false case None => true }) || (match excludeList { case Some(i_value) => (i_value != lid) case None => true })) then
+    if ((match excludeList { case Some(_) => false case None => true }) || (match excludeList { case Some(i_value) => (i_value != lid) case None => true })) then
       if (lid in listNames) then
         var i_existing_val := listNames[lid];
         (eqIgnoreCase(i_existing_val, name) || listNameExistsFrom(lists, listNames, name, excludeList, (i + 1)))
@@ -286,7 +286,7 @@ function taskTitleExistsFrom(lane: seq<TaskId>, taskData: map<int, Task>, title:
     false
   else
     var tid := lane[i];
-    if ((match excludeTask { case Some(i_) => false case None => true }) || (match excludeTask { case Some(i_value) => (i_value != tid) case None => true })) then
+    if ((match excludeTask { case Some(_) => false case None => true }) || (match excludeTask { case Some(i_value) => (i_value != tid) case None => true })) then
       if (tid in taskData) then
         var i_task_val := taskData[tid];
         ((!(i_task_val.deleted) && eqIgnoreCase(i_task_val.title, title)) || taskTitleExistsFrom(lane, taskData, title, excludeTask, (i + 1)))
@@ -1404,7 +1404,7 @@ by method {
   {
     var tid := i_tid_keys[i_tid_idx];
     var tag := m.tags[tid];
-    var i_branch0 := (match excludeTag { case Some(i_) => false case None => true });
+    var i_branch0 := (match excludeTag { case Some(_) => false case None => true });
     if !(i_branch0) {
       var i_t0 := tid;
       i_branch0 := (match excludeTag { case Some(i_value) => (i_value != i_t0) case None => true });
